@@ -20,7 +20,6 @@ export function validateTask(task: Task) {
 export function taskRoute(task: Task): Point[] {
   if (task.type === "deliver") return [LAUNCH, task.pickup, task.dropoff, LAUNCH];
   const { northWest: nw, southEast: se } = task.region;
-  if (task.type === "inspection") return [LAUNCH, nw, { x: se.x, y: nw.y }, se, { x: nw.x, y: se.y }, nw, LAUNCH];
   const sweep: Point[] = [];
   for (let row = 0; row < 4; row++) {
     const y = nw.y + (se.y - nw.y) * row / 3;
@@ -28,5 +27,5 @@ export function taskRoute(task: Task): Point[] {
   }
   return [LAUNCH, ...sweep, LAUNCH];
 }
-export function taskSteps(type: TaskType) { return ["Take off", type === "deliver" ? "Fly to pickup" : "Fly to region", type === "deliver" ? "Deliver package" : type === "search" ? "Search region" : "Inspect perimeter", "Return to launch", "Land"]; }
-export function taskSummary(task: Task) { return task.type === "deliver" ? `${Math.round(distance(task.pickup, task.dropoff))} m pickup to delivery` : `${(regionArea(task.region) / 10000).toFixed(2)} ha · ${task.type === "search" ? "sweep route" : "perimeter route"}`; }
+export function taskSteps(type: TaskType) { return ["Take off", type === "deliver" ? "Fly to pickup" : "Fly to region", type === "deliver" ? "Deliver package" : type === "search" ? "Search region" : "Scan inspection area", "Return to launch", "Land"]; }
+export function taskSummary(task: Task) { return task.type === "deliver" ? `${Math.round(distance(task.pickup, task.dropoff))} m pickup to delivery` : `${(regionArea(task.region) / 10000).toFixed(2)} ha · sweep route`; }

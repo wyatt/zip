@@ -1,5 +1,6 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+// Legacy simulator functions are deployment-internal. Production clients use authenticated modules.
+import { internalMutation as mutation, internalQuery as query } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { point, snapshot, task } from "./schema";

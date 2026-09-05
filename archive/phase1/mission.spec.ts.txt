@@ -1,17 +1,28 @@
 import { test, expect } from "@playwright/test";
 
-test("requester → operator → local agent → flight → return → landed → complete", async ({ browser }) => {
+for (const taskType of ["Search", "Inspection", "Deliver"]) test(`${taskType}: requester → operator → local agent → flight → return → landed → complete`, async ({ browser }) => {
   const requester = await browser.newContext({ viewport: { width: 1440, height: 1100 } });
   const operator = await browser.newContext({ viewport: { width: 1440, height: 1100 } });
   const request = await requester.newPage(), dispatch = await operator.newPage();
   const errors: string[] = [];
   for (const page of [request, dispatch]) page.on("pageerror", error => errors.push(error.message));
   await Promise.all([request.goto("/request"), dispatch.goto("/operator")]);
-  const description = `Demo grounds inspection ${Date.now()}`;
+  const description = `${taskType} demo ${Date.now()}`;
+  await request.getByRole("radio", { name: taskType, exact: true }).check();
   await request.getByLabel("Your name").fill("Alex Morgan");
-  await request.getByLabel("Job description").fill(description);
+  await request.locator("textarea[name=description]").fill(description);
+  await expect(request.getByRole("button", { name: "Submit job" })).toBeDisabled();
+  const map = request.getByTestId("street-map");
+  await expect(map).toHaveAttribute("data-tiles-loaded", "true", { timeout: 20000 });
+  const box = (await map.boundingBox())!;
+  await map.click({ position: { x: box.width * .45, y: box.height * .35 } });
+  await map.click({ position: { x: box.width * .60, y: box.height * .60 } });
+  await expect(request.getByTestId("selection-summary")).toBeVisible();
+  await request.screenshot({ path: `test-results/${taskType}-selection.png`, fullPage: true });
   await request.getByRole("button", { name: "Submit job" }).click();
   await expect(request.getByText("Your job is with the operator.", { exact: false })).toBeVisible();
+  await request.reload();
+  await expect(request.locator(".task-kind")).toHaveText(taskType === "Deliver" ? "Delivery" : taskType);
   await dispatch.getByRole("button").filter({ hasText: description }).click();
   const accept = dispatch.getByRole("button", { name: "Accept & assign simulator" });
   await expect(accept).toBeDisabled();
@@ -19,14 +30,14 @@ test("requester → operator → local agent → flight → return → landed �
   await accept.click();
   const start = dispatch.getByRole("button", { name: "Start autonomous flight" });
   await expect(start).toBeEnabled({ timeout: 15000 });
-  await dispatch.screenshot({ path: "test-results/operator-ready.png", fullPage: true });
+  await dispatch.screenshot({ path: `test-results/${taskType}-operator-ready.png`, fullPage: true });
   await start.click();
   await expect(dispatch.getByRole("button", { name: "Flight in progress" })).toBeDisabled();
   await expect(dispatch.getByTestId("altitude")).not.toHaveText("0m", { timeout: 5000 });
   await expect.poll(async () => Number(await dispatch.getByTestId("drone-marker").getAttribute("data-y"))).toBeLessThan(360);
-  await dispatch.screenshot({ path: "test-results/operator-flying.png", fullPage: true });
+  await dispatch.screenshot({ path: `test-results/${taskType}-operator-flying.png`, fullPage: true });
   await expect(dispatch.getByRole("heading", { name: "Returning to launch" })).toBeVisible({ timeout: 15000 });
-  await dispatch.screenshot({ path: "test-results/operator-returning.png", fullPage: true });
+  await dispatch.screenshot({ path: `test-results/${taskType}-operator-returning.png`, fullPage: true });
   await expect(dispatch.getByRole("heading", { name: "Mission completed", exact: true })).toBeVisible({ timeout: 15000 });
   await expect(request.getByRole("heading", { name: "Mission completed", exact: true })).toBeVisible();
   await expect(dispatch.getByTestId("altitude")).toHaveText("0m");
@@ -41,9 +52,9 @@ test("requester → operator → local agent → flight → return → landed �
   await Promise.all([request.reload(), dispatch.reload()]);
   await expect(request.getByRole("heading", { name: "Mission completed", exact: true })).toBeVisible();
   await expect(dispatch.getByRole("heading", { name: "Mission completed", exact: true })).toBeVisible();
-  await dispatch.screenshot({ path: "test-results/operator-completed.png", fullPage: true });
+  await dispatch.screenshot({ path: `test-results/${taskType}-operator-completed.png`, fullPage: true });
   await request.setViewportSize({ width: 390, height: 844 });
-  await request.screenshot({ path: "test-results/requester-mobile.png", fullPage: true });
+  await request.screenshot({ path: `test-results/${taskType}-requester-mobile.png`, fullPage: true });
   expect(await request.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   expect(errors).toEqual([]);
   await requester.close(); await operator.close();
