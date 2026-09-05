@@ -1,0 +1,9 @@
+node_modules/
+.next/
+.env*
+!.env.example
+.convex/
+*.tsbuildinfo
+test-results/
+playwright-report/
+.DS_Store
