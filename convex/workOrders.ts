@@ -1,12 +1,23 @@
 import { areaGeometry } from "../lib/areas";
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { requireCustomer, requireOperator, hashSecret } from "./access";
 import { controlMode, environment, geo, jobKind, surveyArea } from "./operationsSchema";
-import { assertGeo, createFlightPlan, serializeFlightPlan, matchesRequirements, metersBetween, requiredCapabilities, WAITING_FLEET_RADIUS_M } from "../lib/operations";
+import { assertGeo, createFlightPlan, serializeFlightPlan, matchesRequirements, metersBetween, missionProgressPct, requiredCapabilities, WAITING_FLEET_RADIUS_M, type GeoPoint } from "../lib/operations";
 import { physicalIntegrationAllowed } from "../lib/roles";
 import { profileLaunchSites, resolvedVehicleHome } from "./fleet";
+import { quoteWorkOrder } from "../lib/pricing";
+
+async function marketAround(ctx: QueryCtx | MutationCtx, location: GeoPoint, openOrders?: Doc<"workOrders">[]) {
+  const open = openOrders ?? await ctx.db.query("workOrders").withIndex("by_status", q => q.eq("status", "open")).order("asc").take(200);
+  const idle = await ctx.db.query("vehicles").withIndex("by_available", q => q.eq("available", true)).take(200);
+  return {
+    openNearby: open.filter(order => metersBetween(order.location, location) <= WAITING_FLEET_RADIUS_M).length,
+    idleNearby: idle.filter(vehicle => !vehicle.activeOperationId && metersBetween(vehicle.home, location) <= WAITING_FLEET_RADIUS_M).length,
+  };
+}
 
 const nearbyVehicle = v.object({
   vehicleId: v.id("vehicles"),
@@ -22,10 +33,28 @@ export const mine = query({ args: {}, handler: async ctx => {
   const member = await requireCustomer(ctx);
   const orders = await ctx.db.query("workOrders").withIndex("by_customer", q => q.eq("customerId", member.userId)).order("desc").take(100);
   return Promise.all(orders.map(async order => {
-    if (!order.operationId) return { ...order, vehicleModel: null as string | null };
+    if (!order.operationId) return { ...order, vehicleModel: null as string | null, progressPct: null as number | null };
     const operation = await ctx.db.get(order.operationId);
     const vehicle = operation ? await ctx.db.get(operation.vehicleId) : null;
-    return { ...order, vehicleModel: vehicle?.model ?? null };
+    if (!operation) return { ...order, vehicleModel: vehicle?.model ?? null, progressPct: null as number | null };
+    const recorded = await ctx.db.query("operationTelemetry").withIndex("by_operation", q => q.eq("operationId", operation._id)).unique();
+    const live = !recorded && vehicle?.activeOperationId === operation._id
+      ? await ctx.db.query("vehicleTelemetry").withIndex("by_vehicle", q => q.eq("vehicleId", operation.vehicleId)).unique()
+      : null;
+    const progress = await ctx.db.query("flightProgress").withIndex("by_operation", q => q.eq("operationId", operation._id)).unique();
+    const sample = recorded?.sample ?? live?.sample ?? null;
+    return {
+      ...order,
+      vehicleModel: vehicle?.model ?? null,
+      progressPct: missionProgressPct({
+        state: operation.state,
+        steps: operation.plan.steps,
+        currentStep: operation.currentStep,
+        verifiedSteps: operation.verifiedSteps,
+        sample,
+        dwellMs: progress?.stepIndex === operation.currentStep ? progress.dwellMs : 0,
+      }),
+    };
   }));
 } });
 export const submit = mutation({ args: { title: v.string(), description: v.string(), kind: jobKind, environment, location: geo, area: v.optional(surveyArea), destinations: v.array(geo), payloadKg: v.number(), altitudeM: v.number(), hoverSec: v.number() }, handler: async (ctx, args) => {
@@ -79,9 +108,22 @@ export const eligible = query({ args: {}, handler: async ctx => {
   const { member, profile } = await requireOperator(ctx);
   const vehicles = await ctx.db.query("vehicles").withIndex("by_operator", q => q.eq("operatorId", member.userId)).take(100);
   const orders = await ctx.db.query("workOrders").withIndex("by_status", q => q.eq("status", "open")).order("asc").take(200);
+  const sites = profileLaunchSites(profile);
+  const idle = await ctx.db.query("vehicles").withIndex("by_available", q => q.eq("available", true)).take(200);
   return orders.flatMap(order => {
     const eligibleVehicles = vehicles.filter(vehicle => matchesRequirements({ ...order, required: order.requiredCapabilities }, profile, { ...vehicle, integrationApproved: physicalIntegrationAllowed(vehicle.integrationApproved, member.role) }));
-    return eligibleVehicles.length ? [{ ...order, eligibleVehicleIds: eligibleVehicles.map(v => v._id) }] : [];
+    if (!eligibleVehicles.length) return [];
+    const nearest = eligibleVehicles.reduce((best, vehicle) => {
+      const home = resolvedVehicleHome(sites, vehicle);
+      const bestHome = resolvedVehicleHome(sites, best);
+      return metersBetween(home, order.location) < metersBetween(bestHome, order.location) ? vehicle : best;
+    });
+    const market = {
+      openNearby: orders.filter(other => metersBetween(other.location, order.location) <= WAITING_FLEET_RADIUS_M).length,
+      idleNearby: idle.filter(vehicle => !vehicle.activeOperationId && metersBetween(vehicle.home, order.location) <= WAITING_FLEET_RADIUS_M).length,
+    };
+    const quote = quoteWorkOrder(order, resolvedVehicleHome(sites, nearest), market);
+    return [{ ...order, eligibleVehicleIds: eligibleVehicles.map(v => v._id), quote, market }];
   });
 } });
 export const accept = mutation({ args: { workOrderId: v.id("workOrders"), vehicleId: v.id("vehicles"), mode: controlMode, manualControl: v.union(v.literal("remote"), v.literal("computer")) }, handler: async (ctx, args) => {
@@ -94,16 +136,16 @@ export const accept = mutation({ args: { workOrderId: v.id("workOrders"), vehicl
     throw new Error("Another operator already accepted this job.");
   }
   const home = resolvedVehicleHome(profileLaunchSites(profile), vehicle);
-  if (profile.activeOperationId || vehicle.activeOperationId || order.status !== "open" || !matchesRequirements({ ...order, required: order.requiredCapabilities }, profile, { ...vehicle, integrationApproved: physicalIntegrationAllowed(vehicle.integrationApproved, member.role) })) throw new Error("This request no longer matches your availability or aircraft capabilities.");
+  if (vehicle.activeOperationId || order.status !== "open" || !matchesRequirements({ ...order, required: order.requiredCapabilities }, profile, { ...vehicle, integrationApproved: physicalIntegrationAllowed(vehicle.integrationApproved, member.role) })) throw new Error("This request no longer matches your availability or aircraft capabilities.");
   const manualCapability = args.manualControl === "remote" ? "manual_remote" : "manual_computer";
   if (!vehicle.capabilities.includes(manualCapability) || (args.mode === "autonomous" && !vehicle.capabilities.includes("autonomous"))) throw new Error("Aircraft does not support this control mode and takeover method.");
   if (order.kind === "flight_check" && metersBetween(home, order.location) > 10) throw new Error("A flight check must launch within 10 meters of the requested location.");
   const plan = createFlightPlan({ ...order, mode: args.mode, home, maxRadiusM: vehicle.maxRadiusM });
   const planHash = await hashSecret(serializeFlightPlan(plan));
-  const operationId = await ctx.db.insert("operations", { workOrderId: order._id, customerId: order.customerId, operatorId: member.userId, vehicleId: vehicle._id, state: "assigned", plan, planHash, controlOwner: "none", controlGeneration: vehicle.controlGeneration ?? 0, manualControl: args.manualControl, currentStep: 0, stepDwellMs: 0, progressSequence: -1, verifiedSteps: [], sawAirborne: false, taskOutcome: "pending" });
+  const quotedEarnings = quoteWorkOrder(order, home, await marketAround(ctx, order.location));
+  const operationId = await ctx.db.insert("operations", { workOrderId: order._id, customerId: order.customerId, operatorId: member.userId, vehicleId: vehicle._id, state: "assigned", plan, planHash, controlOwner: "none", controlGeneration: vehicle.controlGeneration ?? 0, manualControl: args.manualControl, currentStep: 0, stepDwellMs: 0, progressSequence: -1, verifiedSteps: [], sawAirborne: false, taskOutcome: "pending", quotedEarnings });
   await ctx.db.patch(order._id, { status: "assigned", operationId, updatedAt: Date.now() });
   await ctx.db.patch(vehicle._id, { available: false, activeOperationId: operationId });
-  await ctx.db.patch(profile._id, { activeOperationId: operationId });
   await ctx.db.insert("operationEvents", { operationId, actor: String(member.userId), kind: "assigned", message: `${member.displayName} accepted the job. ${args.mode === "autonomous" ? "Autonomous" : "Manual"} plan created.`, timestamp: Date.now() });
   return operationId;
 } });

@@ -8,9 +8,22 @@ import { COMMAND_TTL_MS, preflightProblems, TELEMETRY_STALE_MS } from "../lib/op
 
 export const mine = query({ args: {}, handler: async ctx => {
   const member = await requireMember(ctx);
-  return isCustomerRole(member.role) && !isOperatorRole(member.role)
-    ? ctx.db.query("operations").withIndex("by_customer", q => q.eq("customerId", member.userId)).order("desc").take(100)
-    : ctx.db.query("operations").withIndex("by_operator", q => q.eq("operatorId", member.userId)).order("desc").take(100);
+  const operations = isCustomerRole(member.role) && !isOperatorRole(member.role)
+    ? await ctx.db.query("operations").withIndex("by_customer", q => q.eq("customerId", member.userId)).order("desc").take(100)
+    : await ctx.db.query("operations").withIndex("by_operator", q => q.eq("operatorId", member.userId)).order("desc").take(100);
+  return Promise.all(operations.map(async operation => {
+    const [order, vehicle] = await Promise.all([
+      ctx.db.get(operation.workOrderId),
+      ctx.db.get(operation.vehicleId),
+    ]);
+    return {
+      ...operation,
+      title: order?.title ?? `Flight #${operation._id.slice(-6)}`,
+      kind: order?.kind ?? "flight_check",
+      vehicleName: vehicle?.name ?? "Aircraft",
+      vehicleModel: vehicle?.model ?? null,
+    };
+  }));
 } });
 export const details = query({ args: { operationId: v.id("operations") }, handler: async (ctx, { operationId }) => {
   const operation = await requireOperationAccess(ctx, operationId);
@@ -21,7 +34,7 @@ export const details = query({ args: { operationId: v.id("operations") }, handle
   ]);
   const closed = ["completed", "cancelled"].includes(operation.state);
   const session = !closed && vehicle?.activeSessionId ? await ctx.db.get(vehicle.activeSessionId) : null;
-  const aircraft = vehicle ? { _id: vehicle._id, name: vehicle.name, environment: vehicle.environment, capabilities: vehicle.capabilities, activeSessionId: closed ? operation.loadedSessionId : vehicle.activeSessionId } : null;
+  const aircraft = vehicle ? { _id: vehicle._id, name: vehicle.name, model: vehicle.model ?? null, environment: vehicle.environment, capabilities: vehicle.capabilities, activeSessionId: closed ? operation.loadedSessionId : vehicle.activeSessionId } : null;
   return { operation, order, vehicle: aircraft, commands, events: events.reverse(), session: session ? { leaseUntil: session.leaseUntil, retired: session.retired } : null };
 } });
 export const telemetry = query({ args: { operationId: v.id("operations") }, handler: async (ctx, { operationId }) => {

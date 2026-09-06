@@ -57,3 +57,8 @@ Status: iteration 2 complete. TypeScript, production build, seven focused tests,
 - [x] Search/inspection two-corner editing, shaded area, dimensions and sweep preview.
 - [x] Persist area and generate sweep waypoints server-side; display in customer/operator/operation maps.
 - [x] TypeScript passes. Additional test runs omitted at user request.
+
+## Operator earnings
+
+- [x] Uber-style quote (base, deadhead, task distance, hover, payload, area, demand surge). Documented in `docs/pricing.md`.
+- [x] Live payout on available jobs; snapshot on accept; recorded `earnedCents` on completion (no payment infra).

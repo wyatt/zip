@@ -14,6 +14,15 @@ async function signUp(page: Page, route: string, email: string, password: string
   await page.getByRole("button", { name: "Open workspace", exact: true }).click();
   await expect(page.getByRole("link", { name: "Sign out", exact: true })).toBeVisible();
 }
+async function pickInspectionArea(page: Page) {
+  const map = page.getByTestId("flight-map");
+  await expect(map).toBeVisible();
+  const box = await map.boundingBox();
+  if (!box) throw new Error("Flight map is not visible.");
+  await map.click({ position: { x: box.width / 2, y: box.height / 2 } });
+  await map.click({ position: { x: Math.min(box.width - 8, box.width / 2 + 90), y: Math.min(box.height - 8, box.height / 2 + 90) } });
+}
+
 async function stopAgent(agent: ChildProcess | undefined) {
   if (!agent || agent.exitCode !== null || agent.signalCode !== null) return;
   agent.kill("SIGTERM");
@@ -48,16 +57,14 @@ test("private customer request → self-registered operator → provisioned loca
     await signUp(customer, "/request", `customer-${suffix}@iris.test`, password, "Test Customer");
     await customer.getByRole("button", { name: "Inspection", exact: true }).click();
     await customer.getByLabel("Title", { exact: true }).fill(`Stability check ${suffix}`);
-    await customer.getByLabel("Execution environment", { exact: true }).selectOption("simulated");
     await customer.getByLabel("Hover (s)", { exact: true }).fill("5");
-    await customer.getByRole("button", { name: "Use map center", exact: true }).click();
-    await customer.getByRole("button", { name: "Use map center", exact: true }).click();
+    await pickInspectionArea(customer);
     await customer.getByRole("button", { name: "Submit request", exact: false }).click();
     await expect(customer.getByRole("heading", { name: "Finding a qualified operator" })).toBeVisible();
     await operator.getByRole("link", { name: "Dashboard", exact: true }).click();
     await operator.getByRole("button").filter({ hasText: `Stability check ${suffix}` }).click();
     await operator.locator("input[name=mode][value=autonomous]").check();
-    await operator.getByRole("button", { name: "Accept job & create plan", exact: false }).click();
+    await operator.getByRole("button", { name: /Accept job/, exact: false }).click();
     const start = operator.getByRole("button", { name: "Start flight", exact: false });
     await expect(start).toBeEnabled({ timeout: 20000 });
     await operator.screenshot({ path: testInfo.outputPath("operator-ready.png"), fullPage: true });
@@ -80,20 +87,21 @@ test("private customer request → self-registered operator → provisioned loca
       await customer.getByRole("button", { name: "Back to requests", exact: true }).click();
       await customer.getByRole("button", { name: "Inspection", exact: true }).click();
       await customer.getByLabel("Title", { exact: true }).fill(title);
-      await customer.getByLabel("Execution environment", { exact: true }).selectOption("simulated");
       await customer.getByLabel("Hover (s)", { exact: true }).fill("5");
-      await customer.getByRole("button", { name: "Use map center", exact: true }).click();
-      await customer.getByRole("button", { name: "Use map center", exact: true }).click();
+      await pickInspectionArea(customer);
       await customer.getByRole("button", { name: "Submit request", exact: false }).click();
       await operator.getByRole("button").filter({ hasText: title }).click();
       await operator.locator(`input[name=mode][value=${manual ? "manual" : "autonomous"}]`).check();
-      await operator.getByRole("button", { name: "Accept job & create plan", exact: false }).click();
+      await operator.getByRole("button", { name: /Accept job/, exact: false }).click();
       await expect(operator.getByRole("button", { name: "Start flight", exact: false })).toBeEnabled({ timeout: 15000 });
       await operator.getByRole("button", { name: "Start flight", exact: false }).click();
     }
     await requestAnother(`Takeover check ${suffix}`, false);
     await expect.poll(async () => Number((await operator.getByTestId("altitude").innerText()).replace("m", ""))).toBeGreaterThan(2.7);
-    await operator.getByRole("button", { name: "Take over", exact: true }).click();
+    await operator.getByRole("button", { name: "Take Control", exact: true }).click();
+    await expect(operator.getByRole("dialog", { name: "Take Control" })).toBeVisible();
+    await expect(operator.getByRole("dialog")).toContainText("hover in place");
+    await operator.getByRole("dialog").getByRole("button", { name: "Take Control", exact: true }).click();
     await expect(operator.getByTestId("control-owner")).toHaveText("Operator computer");
     await operator.getByRole("button", { name: "Connect computer controls", exact: true }).click();
     await expect(operator.getByText("Computer controls connected", { exact: true })).toBeVisible();

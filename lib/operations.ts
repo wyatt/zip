@@ -129,3 +129,81 @@ export function stepSatisfied(step: PlanStep, sample: AircraftSample): boolean {
   if (metersBetween(sample.position, step.position) > 2 || Math.abs(sample.altitudeM - step.altitudeM) > .5) return false;
   return step.kind === "land" ? sample.airborne === false && sample.armed === false : sample.airborne === true && sample.armed === true;
 }
+
+function clamp01(value: number) {
+  return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
+}
+
+export function missionProgressPct(input: {
+  state: OperationState;
+  steps: PlanStep[];
+  currentStep: number;
+  verifiedSteps: number[];
+  sample?: AircraftSample | null;
+  dwellMs?: number;
+}): number {
+  if (input.state === "completed") return 100;
+  if (input.state === "cancelled" || input.steps.length === 0) return 0;
+  const verified = new Set(input.verifiedSteps);
+  let units = 0;
+  for (let index = 0; index < input.steps.length; index++) {
+    const step = input.steps[index]!;
+    if (verified.has(index) || index < input.currentStep) {
+      units += 1;
+      continue;
+    }
+    if (index !== input.currentStep) continue;
+    units += currentStepFraction(step, input.steps[index - 1], input.sample ?? null, input.dwellMs ?? 0);
+  }
+  return Math.round(clamp01(units / input.steps.length) * 100);
+}
+
+function currentStepFraction(step: PlanStep, previous: PlanStep | undefined, sample: AircraftSample | null, dwellMs: number) {
+  if (!sample?.connected) return 0;
+  if (step.kind === "takeoff") {
+    if (sample.altitudeM === null || step.altitudeM <= 0) return 0;
+    return clamp01(sample.altitudeM / step.altitudeM);
+  }
+  if (step.kind === "hover") {
+    if (step.durationSec <= 0) return stepSatisfied(step, sample) ? 1 : 0;
+    return clamp01(dwellMs / (step.durationSec * 1000));
+  }
+  if (step.kind === "land") {
+    if (sample.armed === false && sample.airborne === false) return 1;
+    const ceiling = Math.max(previous?.altitudeM ?? 3, 1);
+    if (sample.altitudeM === null) return 0;
+    return clamp01(1 - sample.altitudeM / ceiling);
+  }
+  if (!sample.position) return 0;
+  const from = previous?.position ?? step.position;
+  const total = metersBetween(from, step.position);
+  if (total < 1) return metersBetween(sample.position, step.position) <= 2 ? 1 : 0;
+  return clamp01(1 - metersBetween(sample.position, step.position) / total);
+}
+
+const IN_FLIGHT: OperationState[] = [
+  "starting", "active", "taking_over", "manual", "returning", "landing",
+];
+
+export function remainingFlightSec(input: {
+  state: OperationState;
+  maxDurationSec: number;
+  startedAt?: number;
+  now: number;
+}) {
+  if (input.state === "completed" || input.state === "cancelled") return 0;
+  if (!input.startedAt || !IN_FLIGHT.includes(input.state)) return input.maxDurationSec;
+  return Math.max(0, input.maxDurationSec - Math.floor((input.now - input.startedAt) / 1000));
+}
+
+export function formatDurationSec(sec: number) {
+  if (sec <= 0) return "0s";
+  if (sec < 60) return `${sec}s`;
+  const minutes = Math.floor(sec / 60);
+  const seconds = sec % 60;
+  return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+}
+
+export function operationStatusPending(state: OperationState) {
+  return !["completed", "cancelled", "attention"].includes(state);
+}

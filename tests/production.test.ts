@@ -3,7 +3,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import schema from "../convex/schema";
 import { api, internal } from "../convex/_generated/api";
 import { hashSecret } from "../convex/access";
-import { createFlightPlan, matchesRequirements, preflightProblems, requiredCapabilities, validateSample, type AircraftSample, type Capability } from "../lib/operations";
+import { createFlightPlan, matchesRequirements, missionProgressPct, preflightProblems, requiredCapabilities, validateSample, type AircraftSample, type Capability } from "../lib/operations";
 
 const modules = import.meta.glob("../convex/**/*.ts");
 const home = { lat: 42.35596, lon: -71.07029 };
@@ -169,6 +169,17 @@ test("matching requires qualifications, capability, environment and service cove
   expect(matchesRequirements(order, operator, { ...vehicle, integrationApproved: false })).toBe(false);
   expect(matchesRequirements(order, { ...operator, base: { lat: 0, lon: 0 } }, vehicle)).toBe(false);
 });
+test("an operator can fly multiple jobs at once when each has its own aircraft", async () => {
+  const f = await fixture();
+  const secondVehicleId = await f.operator.mutation(api.fleet.register, { name: "Second aircraft", hardwareId: "test-aircraft-2", environment: "simulated", capabilities, maxPayloadKg: 0, launchSiteName: "Home", maxRadiusM: 100 });
+  const secondOrderId = await f.customer.mutation(api.workOrders.submit, { title: "Second hover", description: "Check the other aircraft", kind: "flight_check", environment: "simulated", location: home, destinations: [], payloadKg: 0, altitudeM: 3, hoverSec: 5 });
+  const first = await f.operator.mutation(api.workOrders.accept, { workOrderId: f.workOrderId, vehicleId: f.vehicleId, mode: "autonomous", manualControl: "remote" });
+  await expect(f.operator.mutation(api.workOrders.accept, { workOrderId: secondOrderId, vehicleId: f.vehicleId, mode: "autonomous", manualControl: "remote" })).rejects.toThrow("availability or aircraft");
+  const second = await f.operator.mutation(api.workOrders.accept, { workOrderId: secondOrderId, vehicleId: secondVehicleId, mode: "autonomous", manualControl: "remote" });
+  expect(second).not.toBe(first);
+  const operations = await f.operator.query(api.operations.mine, {});
+  expect(operations.filter(operation => operation.state === "assigned")).toHaveLength(2);
+});
 test("acceptance reserves one operation and repeated acceptance does not duplicate it", async () => {
   const f = await fixture();
   expect(await f.operator.query(api.workOrders.eligible, {})).toHaveLength(1);
@@ -177,7 +188,15 @@ test("acceptance reserves one operation and repeated acceptance does not duplica
   const b = await f.operator.mutation(api.workOrders.accept, args);
   expect(a).toBe(b);
   expect(await f.t.run(ctx => ctx.db.query("operations").collect())).toHaveLength(1);
+  const operation = await f.operator.query(api.operations.details, { operationId: a });
+  expect(operation.operation.quotedEarnings?.cents).toBeGreaterThanOrEqual(300);
   expect(await f.operator.query(api.workOrders.eligible, {})).toHaveLength(0);
+});
+test("eligible jobs include a live operator payout quote", async () => {
+  const f = await fixture();
+  const jobs = await f.operator.query(api.workOrders.eligible, {});
+  expect(jobs[0]?.quote.cents).toBeGreaterThanOrEqual(300);
+  expect(jobs[0]?.quote.surgeX).toBeGreaterThanOrEqual(1);
 });
 test("session ownership rejects impostors and competing agents", async () => {
   const f = await readyFixture();
@@ -235,6 +254,28 @@ test("telemetry rejects NaN, infinity, impossible state and old source timestamp
   expect(() => validateSample({ ...sample(), capturedAt: Date.now() - 11000 }, Date.now())).toThrow("timestamp");
   const plan = createFlightPlan({ kind: "flight_check", location: home, destinations: [], home, mode: "autonomous", altitudeM: 3, hoverSec: 5, maxRadiusM: 100 });
   expect(preflightProblems({ ...sample(), batteryPct: null }, plan, Date.now())).toContain("Insufficient battery or battery unknown");
+});
+
+test("mission progress follows verified steps and live telemetry", () => {
+  const plan = createFlightPlan({ kind: "flight_check", location: home, destinations: [], home, mode: "autonomous", altitudeM: 3, hoverSec: 5, maxRadiusM: 100 });
+  expect(missionProgressPct({ state: "ready", steps: plan.steps, currentStep: 0, verifiedSteps: [] })).toBe(0);
+  expect(missionProgressPct({
+    state: "active",
+    steps: plan.steps,
+    currentStep: 0,
+    verifiedSteps: [],
+    sample: { ...sample(), altitudeM: 1.5, airborne: true, armed: true, connected: true },
+  })).toBe(17);
+  expect(missionProgressPct({ state: "active", steps: plan.steps, currentStep: 1, verifiedSteps: [0] })).toBe(33);
+  expect(missionProgressPct({
+    state: "active",
+    steps: plan.steps,
+    currentStep: 1,
+    verifiedSteps: [0],
+    dwellMs: 2500,
+    sample: { ...sample(), altitudeM: 3, airborne: true, armed: true, connected: true },
+  })).toBe(50);
+  expect(missionProgressPct({ state: "completed", steps: plan.steps, currentStep: 2, verifiedSteps: [0, 1, 2] })).toBe(100);
 });
 
 test("measured flight completes in order and an old customer never sees the aircraft's next flight", async () => {

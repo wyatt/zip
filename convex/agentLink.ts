@@ -8,6 +8,7 @@ import { physicalIntegrationAllowed } from "../lib/roles";
 import { profileLaunchSites, resolvedVehicleHome } from "./fleet";
 import { aircraftSample, capability, controlOwner, environment } from "./operationsSchema";
 import { preflightProblems, SESSION_LEASE_MS, stepSatisfied, validateSample } from "../lib/operations";
+import { formatUsd, quoteWorkOrder } from "../lib/pricing";
 
 const sessionArgs = { token: v.string(), sessionId: v.id("agentSessions") };
 export const fleet = query({ args: { token: v.string() }, handler: async (ctx, { token }) => {
@@ -191,14 +192,19 @@ export const publish = mutation({ args: { ...sessionArgs, sample: aircraftSample
   if (!sawAirborne || args.sample.airborne !== false || args.sample.armed !== false || verifiedSteps.length !== operation.plan.steps.length) throw new Error("Completion requires a verified flight, landing, and disarm.");
   const order = await ctx.db.get(operation.workOrderId);
   const taskOutcome = order?.kind === "flight_check" ? "succeeded" as const : "unverified" as const;
-  await ctx.db.patch(operation._id, { state: "completed", controlOwner: "none", verifiedSteps, completedAt: Date.now(), taskOutcome });
+  const earnedCents = operation.quotedEarnings?.cents ?? (order ? quoteWorkOrder(order, operation.plan.home, { openNearby: 1, idleNearby: 1 }).cents : 0);
+  await ctx.db.patch(operation._id, { state: "completed", controlOwner: "none", verifiedSteps, completedAt: Date.now(), taskOutcome, earnedCents });
   if (order) await ctx.db.patch(order._id, { status: "completed", updatedAt: Date.now() });
   await ctx.db.patch(vehicle._id, { available: true, activeOperationId: undefined });
   const profile = await ctx.db.query("operatorProfiles").withIndex("by_user", q => q.eq("userId", operation.operatorId)).unique();
-  if (profile?.activeOperationId === operation._id) await ctx.db.patch(profile._id, { activeOperationId: undefined });
+  if (profile) {
+    const lifetimeEarningsCents = (profile.lifetimeEarningsCents ?? 0) + earnedCents;
+    await ctx.db.patch(profile._id, { lifetimeEarningsCents, ...(profile.activeOperationId === operation._id ? { activeOperationId: undefined } : {}) });
+  }
   const commands = await ctx.db.query("controlCommands").withIndex("by_operation", q => q.eq("operationId", operation._id)).collect();
   for (const command of commands) if (command.status === "acknowledged") await ctx.db.patch(command._id, { status: "completed", completedAt: Date.now() });
   await recordEvent(ctx, operation._id, "completed", taskOutcome === "succeeded" ? "Flight check completed after verified landing and disarm." : "Flight completed. Task result still requires evidence.");
+  await recordEvent(ctx, operation._id, "earnings", `Recorded operator earnings ${formatUsd(earnedCents)}.`);
 } });
 
 export const reportFailure = mutation({ args: { ...sessionArgs, operationId: v.id("operations"), reason: v.string() }, handler: async (ctx, args) => {

@@ -92,7 +92,8 @@ export const configureOperator = mutation({ args: { userId: v.id("users"), appro
   await requireAdmin(ctx);
   const profile = await ctx.db.query("operatorProfiles").withIndex("by_user", q => q.eq("userId", userId)).unique();
   if (!profile) throw new Error("Operator not found.");
-  if (profile.activeOperationId) throw new Error("Resolve the active operation before changing operator approval.");
+  const fleet = await ctx.db.query("vehicles").withIndex("by_operator", q => q.eq("operatorId", userId)).take(100);
+  if (fleet.some(vehicle => vehicle.activeOperationId)) throw new Error("Resolve active operations before changing operator approval.");
   await ctx.db.patch(profile._id, { approved, qualifications: [...new Set(qualifications)] });
 } });
 // Provisioning is available only through the authenticated deployment administration CLI.
