@@ -9,6 +9,7 @@ import { assertGeo, createFlightPlan, serializeFlightPlan, matchesRequirements, 
 import { physicalIntegrationAllowed } from "../lib/roles";
 import { profileLaunchSites, resolvedVehicleHome } from "./fleet";
 import { quoteWorkOrder } from "../lib/pricing";
+import { deleteCameraSession } from "./cameras";
 
 async function marketAround(ctx: QueryCtx | MutationCtx, location: GeoPoint, openOrders?: Doc<"workOrders">[]) {
   const open = openOrders ?? await ctx.db.query("workOrders").withIndex("by_status", q => q.eq("status", "open")).order("asc").take(200);
@@ -237,8 +238,7 @@ async function deleteOperationRecords(ctx: MutationCtx, operationId: Id<"operati
   if (telemetry) await ctx.db.delete(telemetry._id);
   const progress = await ctx.db.query("flightProgress").withIndex("by_operation", q => q.eq("operationId", operationId)).unique();
   if (progress) await ctx.db.delete(progress._id);
-  const camera = await ctx.db.query("cameraSessions").withIndex("by_operation", q => q.eq("operationId", operationId)).unique();
-  if (camera) await ctx.db.delete(camera._id);
+  await deleteCameraSession(ctx, operationId);
   const vehicle = await ctx.db.get(operation.vehicleId);
   if (vehicle?.activeOperationId === operationId) await ctx.db.patch(vehicle._id, { available: true, activeOperationId: undefined });
   const profile = await ctx.db.query("operatorProfiles").withIndex("by_user", q => q.eq("userId", operation.operatorId)).unique();

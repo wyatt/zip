@@ -48,6 +48,7 @@ export interface DroneAdapter {
   /** Measurements flow before, during, and after missions. Listener must not block the controller. */
   onTelemetry(listener: (sample: AircraftSample) => void): () => void;
   captureImage?(context: CommandContext): Promise<CapturedImage>;
+  latestJpeg?(): Buffer | null;
   openCameraStream?(): Promise<CameraStream>;
   beginRegionalTask?(step: PlanStep, plan: FlightPlan, context: CommandContext): Promise<CommandAcknowledgment>;
   setJob?(job: { kind: string; location: GeoPoint; destinations: GeoPoint[]; area?: { northWest: GeoPoint; southEast: GeoPoint } } | null): void;

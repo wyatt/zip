@@ -50,7 +50,7 @@ export function CameraPanel({ operationId, supported, inspecting = false }: { op
   }, [stream?.url, stream?.protocol, stream?.expiresAt]);
   const live = !expired && !!stream;
   return (
-    <details className="camera-panel">
+    <details className="camera-panel" open>
       <summary>
         <h3>{inspecting ? "Inspection mosaic" : "Live aircraft video"}</h3>
       </summary>
@@ -59,7 +59,7 @@ export function CameraPanel({ operationId, supported, inspecting = false }: { op
           : stream.protocol === "mjpeg" ? (
             <>
               <p className="muted">{expired ? "Camera authorization expired." : inspecting ? "North-up capture trace" : "Live aircraft video"}</p>
-              {!expired && <img className={`live-video${inspecting ? " inspection-mosaic" : ""}`} src={stream.url} alt={inspecting ? "Inspection mosaic" : "Live aircraft video"} onLoad={() => setPlaying(true)} onError={() => setError("Camera playback failed.")} />}
+              {!expired && <img key={stream.url} className={`live-video${inspecting ? " inspection-mosaic" : ""}`} src={stream.url} alt={inspecting ? "Inspection mosaic" : "Live aircraft video"} onLoad={() => setPlaying(true)} onError={() => setError("Camera playback failed.")} />}
             </>
           ) : (
             <>

@@ -44,7 +44,7 @@ async function connectVehicle(client: ConvexClient, token: string, instanceId: s
   let lastBackendContact = Date.now();
   let linkLost = false;
   let observedSequence = -1;
-  let cameraPublishedFor = "", cameraExpiresAt = 0, cameraPublishing = false;
+  let cameraPublishedFor = "", cameraExpiresAt = 0, cameraPublishing = false, cameraFrameHash = "";
   let preparedRetryAt = 0;
   let lastPreparedError = "";
   let clockOffset = 0;
@@ -211,13 +211,31 @@ async function connectVehicle(client: ConvexClient, token: string, instanceId: s
   const workTimer = setInterval(() => { void processWork(); }, 250);
   const cameraTimer = setInterval(() => {
     const operationId = latestWork?.operation?._id;
-    if (!operationId || !adapter.openCameraStream || !identity.capabilities.includes("camera") || cameraPublishing || shuttingDown || isShuttingDown() || (cameraPublishedFor === operationId && cameraExpiresAt > Date.now() + 30000)) return;
+    if (!operationId || !identity.capabilities.includes("camera") || cameraPublishing || shuttingDown || isShuttingDown()) return;
+    const jpeg = adapter.latestJpeg?.() ?? null;
+    if (jpeg) {
+      const hash = createHash("sha256").update(jpeg).digest("hex");
+      if (cameraPublishedFor === operationId && cameraFrameHash === hash && cameraExpiresAt > Date.now() + 30000) return;
+      cameraPublishing = true;
+      void (async () => {
+        const uploadUrl = await client.mutation(api.cameras.uploadUrl, sessionArgs());
+        const uploaded = await fetch(uploadUrl, { method: "POST", headers: { "Content-Type": "image/jpeg" }, body: new Uint8Array(jpeg) });
+        if (!uploaded.ok) throw new Error("Camera frame upload failed.");
+        const payload = await uploaded.json() as { storageId?: Id<"_storage"> };
+        if (!payload.storageId) throw new Error("Camera frame upload failed.");
+        const expiresAt = Date.now() + 240000;
+        await client.mutation(api.cameras.publish, { ...sessionArgs(), operationId, protocol: "mjpeg", storageId: payload.storageId, expiresAt });
+        cameraPublishedFor = operationId; cameraExpiresAt = expiresAt; cameraFrameHash = hash;
+      })().catch(() => console.error(`${identity.hardwareId}: camera stream is unavailable.`)).finally(() => { cameraPublishing = false; });
+      return;
+    }
+    if (!adapter.openCameraStream || (cameraPublishedFor === operationId && cameraExpiresAt > Date.now() + 30000)) return;
     cameraPublishing = true;
     void adapter.openCameraStream().then(async stream => {
       await client.mutation(api.cameras.publish, { ...sessionArgs(), operationId, ...stream });
       cameraPublishedFor = operationId; cameraExpiresAt = stream.expiresAt;
     }).catch(() => console.error(`${identity.hardwareId}: camera stream is unavailable.`)).finally(() => { cameraPublishing = false; });
-  }, 5000);
+  }, 1000);
   const watchdogTimer = setInterval(() => {
     if (!linkLost && Date.now() - lastBackendContact > 3000) { linkLost = true; void failLocally("Cloud link lost; local failsafe engaged."); }
   }, 100);

@@ -481,6 +481,15 @@ test("camera sessions are scoped to the job and authenticated aircraft", async (
   expect(await f.customer.query(api.cameras.forOperation, { operationId: f.operationId })).toBeNull();
 });
 
+test("camera frames uploaded by the agent are returned as HTTPS URLs", async () => {
+  const f = await readyFixture();
+  const storageId = await f.t.run(async ctx => ctx.storage.store(new Blob([new Uint8Array([0xff, 0xd8, 0xff, 0xd9])], { type: "image/jpeg" })));
+  await f.t.mutation(api.cameras.publish, { token, sessionId: f.sessionId, operationId: f.operationId, protocol: "mjpeg", storageId, expiresAt: Date.now() + 60000 });
+  const camera = await f.customer.query(api.cameras.forOperation, { operationId: f.operationId });
+  expect(camera?.protocol).toBe("mjpeg");
+  expect(camera?.url).toMatch(/^https?:\/\//);
+});
+
 test("Goldwin Smith Hall base and aircraft attach to an existing operator", async () => {
   const f = await fixture();
   const first = await f.t.mutation(internal.seed.addGoldwinSmithBase, { email: "operator@example.com" });
