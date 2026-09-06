@@ -160,6 +160,9 @@ export function createFlightPlan(input: { kind: JobKind; location: GeoPoint; des
   const cruise = 30;
   const steps: PlanStep[] = [
     { kind: "takeoff", label: "Take off", position: input.home, altitudeM: cruise, durationSec: 0 },
+    ...(ends && metersBetween(input.home, ends.a) >= 10
+      ? [{ kind: "waypoint" as const, label: "Fly to pickup", position: ends.a, altitudeM: cruise, durationSec: 0 }]
+      : []),
     { kind: taskKind, label: taskLabel, position: taskAt, altitudeM: cruise, durationSec: 0 },
     { kind: "land", label: "Land and disarm", position: landAt, altitudeM: 0, durationSec: 0 },
   ];

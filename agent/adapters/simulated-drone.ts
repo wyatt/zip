@@ -2,6 +2,9 @@ import type { AircraftSample, ControlOwner, FlightPlan, GeoPoint, PlanStep } fro
 import { metersBetween, seededBatteryPct } from "../../lib/operations";
 import { assertCommandContext, type AdapterIdentity, type CommandAcknowledgment, type CommandContext, type DroneAdapter } from "../drone-adapter";
 
+/** Demo climb covers the 30 m adapter ceiling in 5 s. */
+const DEMO_VERTICAL_MPS = 6;
+
 /** A local-process aircraft simulator. All measurements originate here, never in the browser. */
 export class SimulatedDrone implements DroneAdapter {
   private timer?: ReturnType<typeof setInterval>;
@@ -158,7 +161,7 @@ export class SimulatedDrone implements DroneAdapter {
       const fraction = distance < .001 ? 1 : Math.min(1, 2 * dt / distance);
       this.sample.position = { lat: old.lat + (this.target.position.lat - old.lat) * fraction, lon: old.lon + (this.target.position.lon - old.lon) * fraction };
       const dz = this.target.altitudeM - oldAltitude;
-      this.sample.altitudeM = oldAltitude + Math.sign(dz) * Math.min(Math.abs(dz), dt);
+      this.sample.altitudeM = oldAltitude + Math.sign(dz) * Math.min(Math.abs(dz), DEMO_VERTICAL_MPS * dt);
     }
     if (this.sample.altitudeM! > .1) this.sample.airborne = true;
     if (this.landing && this.sample.altitudeM! <= .01) {

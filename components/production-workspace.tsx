@@ -187,19 +187,22 @@ function CustomerWorkspace() {
       areaError = messageOf(caught);
     }
   }
-  const { preview: deliveryPreview, planning: planningDelivery, error: deliveryPlanError } =
-    useRegionalAcceptPreview(
-      page === "compose" && isDelivery && firstCorner && secondCorner
-        ? {
-            kind: "deliver",
-            home: firstCorner,
-            location: firstCorner,
-            destinations: [secondCorner],
-            altitudeM: 3,
-            hoverSec: 10,
-          }
-        : null,
-    );
+  const {
+    preview: deliveryPreview,
+    planning: planningDelivery,
+    error: deliveryPlanError,
+  } = useRegionalAcceptPreview(
+    page === "compose" && isDelivery && firstCorner && secondCorner
+      ? {
+          kind: "deliver",
+          home: firstCorner,
+          location: firstCorner,
+          destinations: [secondCorner],
+          altitudeM: 3,
+          hoverSec: 10,
+        }
+      : null,
+  );
   const chooseLocation = (point: GeoPoint) => {
     if (!isAreaJob && !isDelivery) {
       setLocation(point);
@@ -229,7 +232,9 @@ function CustomerWorkspace() {
     }
     if (id === "b") {
       const origin = firstCorner ?? point;
-      setSecondCorner(metersBetween(origin, point) < 10 ? offsetPoint(origin, 80) : point);
+      setSecondCorner(
+        metersBetween(origin, point) < 10 ? offsetPoint(origin, 80) : point,
+      );
       setCorner("second");
     }
   };
@@ -393,7 +398,12 @@ function CustomerWorkspace() {
               <form
                 onSubmit={async (event) => {
                   event.preventDefault();
-                  if (!location || (isAreaJob && !geometry) || (isDelivery && !secondCorner)) return;
+                  if (
+                    !location ||
+                    (isAreaJob && !geometry) ||
+                    (isDelivery && !secondCorner)
+                  )
+                    return;
                   const data = new FormData(event.currentTarget);
                   setBusy(true);
                   setError("");
@@ -407,7 +417,9 @@ function CustomerWorkspace() {
                       environment: "aircraft",
                       location: geometry?.center ?? pickup,
                       ...(area ? { area } : {}),
-                      destinations: geometry?.destinations ?? (isDelivery ? [dropoff] : [location]),
+                      destinations:
+                        geometry?.destinations ??
+                        (isDelivery ? [dropoff] : [location]),
                       payloadKg:
                         kind === "deliver" ? Number(data.get("payload")) : 0,
                       altitudeM: Number(data.get("altitude")),
@@ -474,9 +486,9 @@ function CustomerWorkspace() {
                   <fieldset>
                     <legend>Pickup and drop-off</legend>
                     <p className="muted">
-                      Place point A, then point B. Drag either marker to
-                      refine the route. The planner flies A → B, delivers at
-                      B, and returns to A.
+                      Place point A, then point B. Drag either marker to refine
+                      the route. The planner flies A → B, delivers at B, and
+                      returns to A.
                     </p>
                     <div className="location-choices">
                       {(["first", "second"] as const).map((slot, index) => (
@@ -486,9 +498,13 @@ function CustomerWorkspace() {
                           className={corner === slot ? "active" : ""}
                           onClick={() => setCorner(slot)}
                         >
-                          <span className="location-index">{index === 0 ? "A" : "B"}</span>
+                          <span className="location-index">
+                            {index === 0 ? "A" : "B"}
+                          </span>
                           <span>
-                            <strong>{slot === "first" ? "Pickup A" : "Drop-off B"}</strong>
+                            <strong>
+                              {slot === "first" ? "Pickup A" : "Drop-off B"}
+                            </strong>
                             <small>
                               {(slot === "first" ? firstCorner : secondCorner)
                                 ? "Selected · drag marker to move"
@@ -512,7 +528,8 @@ function CustomerWorkspace() {
                     </button>
                     {firstCorner && secondCorner && (
                       <p className="selection-summary">
-                        {Math.round(metersBetween(firstCorner, secondCorner))} m A → B
+                        {Math.round(metersBetween(firstCorner, secondCorner))} m
+                        A → B
                         {planningDelivery
                           ? " · planning terrain route…"
                           : deliveryPreview?.planned
@@ -597,8 +614,9 @@ function CustomerWorkspace() {
                 )}
                 {isDelivery && !secondCorner && (
                   <p className="selection-summary">
-                    Choose point {corner === "first" ? "A (pickup)" : "B (drop-off)"} on
-                    the map.
+                    Choose point{" "}
+                    {corner === "first" ? "A (pickup)" : "B (drop-off)"} on the
+                    map.
                   </p>
                 )}
                 {isAreaJob && !geometry && (
@@ -609,7 +627,12 @@ function CustomerWorkspace() {
                 )}
                 <button
                   className="primary"
-                  disabled={busy || !location || (isAreaJob && !geometry) || (isDelivery && !secondCorner)}
+                  disabled={
+                    busy ||
+                    !location ||
+                    (isAreaJob && !geometry) ||
+                    (isDelivery && !secondCorner)
+                  }
                 >
                   {busy ? "Submitting…" : "Submit request"}
                   <span>↗</span>
@@ -627,13 +650,21 @@ function CustomerWorkspace() {
               chrome={false}
               hideHome={isDelivery}
               home={firstCorner ?? location ?? ITHACA_HOME}
-              selected={isDelivery ? undefined : geometry?.center ?? location ?? undefined}
+              selected={
+                isDelivery
+                  ? undefined
+                  : (geometry?.center ?? location ?? undefined)
+              }
               area={area}
               markers={
                 isDelivery
                   ? [
-                      ...(firstCorner ? [{ id: "a", label: "A", point: firstCorner }] : []),
-                      ...(secondCorner ? [{ id: "b", label: "B", point: secondCorner }] : []),
+                      ...(firstCorner
+                        ? [{ id: "a", label: "A", point: firstCorner }]
+                        : []),
+                      ...(secondCorner
+                        ? [{ id: "b", label: "B", point: secondCorner }]
+                        : []),
                     ]
                   : undefined
               }
@@ -880,7 +911,9 @@ function WaitingMap({
     destinations: GeoPoint[];
   };
 }) {
-  const nearby = useQuery(api.workOrders.availableNearby, { workOrderId: order._id });
+  const nearby = useQuery(api.workOrders.availableNearby, {
+    workOrderId: order._id,
+  });
   return (
     <FlightMap
       chrome={false}
@@ -910,9 +943,7 @@ function WaitingPanel({
   return (
     <section className="panel">
       <p className="eyebrow">{JOB_LABELS[order.kind].toUpperCase()}</p>
-      <h2
-        className={order.status === "cancelled" ? undefined : "status-pulse"}
-      >
+      <h2 className={order.status === "cancelled" ? undefined : "status-pulse"}>
         {order.status === "cancelled"
           ? "Request cancelled"
           : "Finding a qualified operator"}
@@ -980,20 +1011,23 @@ function OperatorWorkspace({ account }: { account: Account }) {
     order && vehicle
       ? quoteWorkOrder(order, vehicle.home, order.market)
       : order?.quote;
-  const { preview: acceptPreview, planning: planningRoute, error: routeError } =
-    useRegionalAcceptPreview(
-      order && vehicle
-        ? {
-            kind: order.kind,
-            location: order.location,
-            destinations: order.destinations,
-            area: order.area,
-            home: vehicle.home,
-            altitudeM: order.altitudeM,
-            hoverSec: order.hoverSec,
-          }
-        : null,
-    );
+  const {
+    preview: acceptPreview,
+    planning: planningRoute,
+    error: routeError,
+  } = useRegionalAcceptPreview(
+    order && vehicle
+      ? {
+          kind: order.kind,
+          location: order.location,
+          destinations: order.destinations,
+          area: order.area,
+          home: vehicle.home,
+          altitudeM: order.altitudeM,
+          hoverSec: order.hoverSec,
+        }
+      : null,
+  );
   const acceptPosition = vehicle
     ? (vehicle.telemetry?.sample?.position ?? vehicle.home)
     : undefined;
@@ -1022,7 +1056,9 @@ function OperatorWorkspace({ account }: { account: Account }) {
     try {
       await remove({ workOrderId });
       if (selectedOrder === workOrderId) setSelectedOrder(null);
-      const flight = operations?.find((item) => item.workOrderId === workOrderId);
+      const flight = operations?.find(
+        (item) => item.workOrderId === workOrderId,
+      );
       if (flight && operationId === flight._id) selectOperation(null);
     } catch (caught) {
       setError(messageOf(caught));
@@ -1351,7 +1387,8 @@ function OperatorWorkspace({ account }: { account: Account }) {
                   const best = item._id === recommendedVehicle?._id;
                   return (
                     <option key={item._id} value={item._id}>
-                      {item.name} · {formatDistanceM(distance)} · {Math.round(battery)}%{best ? " · best" : ""}
+                      {item.name} · {formatDistanceM(distance)} ·{" "}
+                      {Math.round(battery)}%{best ? " · best" : ""}
                     </option>
                   );
                 })}
@@ -1614,7 +1651,11 @@ function OperationPanel({
         <p className="muted">
           {details.order?.title} · {vehicle?.name}
         </p>
-        <div className={sample?.mission ? "telemetry" : "telemetry telemetry-stats"}>
+        <div
+          className={
+            sample?.mission ? "telemetry" : "telemetry telemetry-stats"
+          }
+        >
           {sample?.mission ? (
             <>
               <div>
@@ -1758,9 +1799,13 @@ function OperationPanel({
                 </button>
               </>
             )}
-            {["active", "taking_over", "manual", "returning", "landing"].includes(
-              operation.state,
-            ) && (
+            {[
+              "active",
+              "taking_over",
+              "manual",
+              "returning",
+              "landing",
+            ].includes(operation.state) && (
               <div className="interventions">
                 {underAutonomy && (
                   <button
@@ -1776,7 +1821,9 @@ function OperationPanel({
                       : "Take Control"}
                   </button>
                 )}
-                {["active", "manual", "returning"].includes(operation.state) && (
+                {["active", "manual", "returning"].includes(
+                  operation.state,
+                ) && (
                   <>
                     <button
                       disabled={busy || !fresh}
@@ -1856,7 +1903,7 @@ function OperationPanel({
           )}
         {operator && !closed && operation.quotedEarnings && (
           <p className="payout-callout">
-            Quoted earnings{" "}
+            Quoted earnings:{" "}
             {payoutLabel(
               operation.quotedEarnings.cents,
               operation.quotedEarnings.surgeX,
@@ -1890,7 +1937,14 @@ function OperationPanel({
             }}
           />
         )}
-        <CameraPanel operationId={operation._id} supported inspecting={details.order?.kind === "inspection" || sample?.mission?.mode === "inspection"} />
+        <CameraPanel
+          operationId={operation._id}
+          supported
+          inspecting={
+            details.order?.kind === "inspection" ||
+            sample?.mission?.mode === "inspection"
+          }
+        />
         <details className="events">
           <summary>
             Flight activity <span>{details.events.length} events</span>

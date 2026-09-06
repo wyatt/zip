@@ -104,6 +104,7 @@ export default function GeographicMap({ home, selected, route, area, selectionPr
   useEffect(() => { select.current = onSelect; }, [onSelect]);
   useEffect(() => { movePin.current = onMarkerMove; }, [onMarkerMove]);
   const initialHome = useRef(home);
+  const framedSelection = useRef(false);
   useEffect(() => {
     const instance = L.map(container.current!, { zoomControl: false, minZoom: 2, maxZoom: SATELLITE_MAX_ZOOM }).setView(latLng(initialHome.current), 17);
     map.current = instance;
@@ -192,13 +193,11 @@ export default function GeographicMap({ home, selected, route, area, selectionPr
     if (data?.nsfr) L.geoJSON(data.nsfr, { style: { color: "#b42318", weight: 1, fillOpacity: 0.16 }, interactive: false }).addTo(faaLayer.current);
   }, [faaKey]);
   useEffect(() => {
-    if (!map.current || !select.current) return;
+    if (!map.current || !select.current || framedSelection.current) return;
     const fleetPoints = (fleetRef.current ?? []).map(item => item.point);
-    if (fleetPoints.length) {
-      map.current.fitBounds(L.latLngBounds([home, ...fleetPoints].map(latLng)).pad(.35), { maxZoom: 15, animate: false });
-      return;
-    }
-    if (!hideHome) map.current.setView(latLng(home), 17);
-  }, [home.lat, home.lon, hideHome, fleetKey]);
+    if (!fleetPoints.length) return;
+    map.current.fitBounds(L.latLngBounds([initialHome.current, ...fleetPoints].map(latLng)).pad(.35), { maxZoom: 15, animate: false });
+    framedSelection.current = true;
+  }, [fleetKey]);
   return <div className={`map-wrap street-map-wrap${chrome ? "" : " map-bare"}`}>{chrome && <div className="street-toolbar"><strong>{onSelect ? selectionPrompt ?? "Choose the job location" : "Flight area"}</strong><button className="text-button" onClick={() => map.current?.fitBounds(L.latLngBounds([home, ...(route ?? []), ...(area ? [area.northWest, area.southEast] : []), ...(selected ? [selected] : []), ...(markers ?? []).map(marker => marker.point)].map(latLng)).pad(.3), { maxZoom: 16 })}>Fit flight area</button></div>}<div ref={container} className="street-map" data-testid="flight-map" data-tiles-loaded={loaded} />{chrome && onSelect && <div className="map-instruction"><span>{selectionPrompt ?? "Click the map to choose a location."}</span><button type="button" onClick={() => { const center = map.current?.getCenter(); if (center) onSelect({ lat: center.lat, lon: center.lng }); }}>Use map center</button></div>}{error && <p className="tile-error" role="status">Map unavailable. Try again shortly.</p>}</div>;
 }

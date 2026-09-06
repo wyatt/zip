@@ -132,9 +132,12 @@ export async function planRegionalMission({regionUrl,config,progress=()=>{}}){
   const half=manifest.size/2,inside=p=>Array.isArray(p)&&p.length>=2&&p.slice(0,2).every(Number.isFinite)&&Math.abs(p[0])<half&&Math.abs(p[1])<half;
   if(!inside(config.a))throw new Error('Point A must lie inside the regional domain.');
   if(config.mode==='delivery'&&!inside(config.b))throw new Error('Point B must lie inside the regional domain.');
+  if(config.mode==='delivery'&&config.home&&!inside(config.home))throw new Error('Home must lie inside the regional domain.');
   const options=validateOptions({...config.settings,mode:config.mode}),overview=await fetchTerrain(`${url}overview/terrain.bin.gz`),terrain=new Terrain(url,manifest,overview);
   progress({stage:'coarse',completed:0,total:1});let polygon=null,target=null,route=[],returnStart=0;
   if(config.mode==='delivery'){
+    const launch=config.home&&inside(config.home)?config.home:config.a;
+    if(distance2(launch,config.a)>1)appendPath(route,terrain.coarsePath(launch,config.a));
     const outbound=terrain.coarsePath(config.a,config.b);appendPath(route,outbound);returnStart=route.length;appendPath(route,[...outbound].reverse());
   }else{
     polygon=normalizePolygon(config.polygon,{halfSize:half,maxArea:config.settings?.maxArea??25_000_000});
@@ -148,11 +151,13 @@ export async function planRegionalMission({regionUrl,config,progress=()=>{}}){
   progress({stage:'coarse',completed:1,total:1});route=densify(route);
   await terrain.loadAround(route,progress);if(target)target=[target[0],target[1],terrain.heightAt(target,0)];
   const holdHighUntil=siteArrivalIndex(route,polygon,config.mode==='delivery'?config.b:null);
-  const profiled=altitudeProfile(route,terrain,options,holdHighUntil,{holdCruise:config.mode==='delivery'}),surface=terrain.heightAt(config.a,0),start=[config.a[0],config.a[1],surface],
+  const launch=config.mode==='delivery'&&config.home&&inside(config.home)?config.home:config.a;
+  const profiled=altitudeProfile(route,terrain,options,holdHighUntil,{holdCruise:config.mode==='delivery'}),surface=terrain.heightAt(launch,0),start=[launch[0],launch[1],surface],
+    land=config.mode==='delivery'?config.a:launch,
     tasks=missionTasks(config.mode,profiled,polygon,options,{target,returnStart});
   if(config.mode==='delivery')tasks[Math.max(0,returnStart-1)].kind='deliver';
   if(config.mode==='search'&&!tasks.some(task=>task.kind==='found'))throw new Error('Search track spacing exceeds the configured detection coverage.');
-  tasks.push({point:start.slice(),kind:'return',photo:null});
+  tasks.push({point:[land[0],land[1],terrain.heightAt(land,0)],kind:'return',photo:null});
   let previous=start,flightSeconds=0;for(const task of tasks){flightSeconds+=Math.max(distance2(previous,task.point)/options.speed,Math.abs(previous[2]-task.point[2])/options.climbSpeed);previous=task.point;}
   const requiredBattery=flightSeconds/(options.flightMinutes*60)*100+options.arrivalReserve;if(requiredBattery>=100)throw new Error('Mission exceeds the selected endurance and return reserve.');
   const bounds=polygon?polygonBounds(polygon):null,routeBounds={west:Infinity,east:-Infinity,south:Infinity,north:-Infinity};

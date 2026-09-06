@@ -337,6 +337,25 @@ test("acceptance preview uses the regional A* draft and a hover fallback", () =>
     home: pickup,
   });
   expect(padToDrop?.a).toEqual([0, 0]);
+  expect(padToDrop?.home).toEqual([0, 0]);
+  const padToPickup = regionalMissionConfig({
+    kind: "deliver",
+    location: pickup,
+    destinations: [drop],
+    home: { lat: pickup.lat - 0.002, lon: pickup.lon },
+  });
+  expect(padToPickup?.home).toEqual([0, 0]);
+  expect(padToPickup?.a?.[1]).toBeGreaterThan(100);
+  const fromPad = syntheticRegionalPlan({
+    kind: "deliver",
+    home: { lat: pickup.lat - 0.002, lon: pickup.lon },
+    location: pickup,
+    destinations: [drop],
+  });
+  expect(fromPad.start).toEqual([0, 0, 0]);
+  expect(fromPad.tasks[0]?.kind).toBe("outbound");
+  expect(fromPad.tasks.some(task => task.kind === "deliver")).toBe(true);
+  expect(fromPad.tasks.at(-1)?.kind).toBe("return");
   const ends = deliveryEndpoints({ location: pickup, destinations: [drop], home: pickup });
   expect(ends.a).toEqual(pickup);
   expect(ends.b).toEqual(drop);

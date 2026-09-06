@@ -456,6 +456,7 @@
 }
 .operator-retro .payout-callout {
   margin: 0;
+  padding-top: 12px;
   font-size: 16px;
   line-height: 1.3;
   font-weight: 800;
@@ -494,8 +495,7 @@
 .operator-retro .accept-job span {
   font-size: 24px;
 }
-.operator-retro .primary.start,
-.operator-retro .primary.takeover {
+.operator-retro .primary.start {
   min-width: 160px;
   width: auto;
 }
@@ -618,11 +618,22 @@
 }
 .operator-retro .interventions {
   margin-top: 0;
+  display: flex;
+  flex-wrap: nowrap;
   gap: 8px;
 }
 .operator-retro .interventions button {
   border: 3px solid var(--ink);
   background: white;
+  flex: 0 1 auto;
+  width: auto;
+  justify-content: center;
+  white-space: nowrap;
+}
+.operator-retro .interventions .takeover {
+  background: var(--ink);
+  color: #fff;
+  border-color: var(--ink);
 }
 .operator-job-layer .telemetry-caption {
   margin: 0 0 8px;

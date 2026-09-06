@@ -8,6 +8,7 @@ export type RegionalMissionConfig = {
   mode: "delivery" | "inspection" | "search";
   a: number[];
   b?: number[];
+  home?: number[];
   polygon?: number[][][];
   settings?: { seed: number };
 };
@@ -54,9 +55,15 @@ export function regionalMissionConfig(input: {
   const a = toLocal(input.home, input.home);
   if (input.kind === "deliver") {
     const ends = deliveryEndpoints(input);
+    const pad = toLocal(input.home, input.home);
     const start = toLocal(input.home, ends.a);
     const b = toLocal(input.home, ends.b);
-    return { mode: "delivery", a: [start.east, start.north], b: [b.east, b.north] };
+    return {
+      mode: "delivery",
+      home: [pad.east, pad.north],
+      a: [start.east, start.north],
+      b: [b.east, b.north],
+    };
   }
   return {
     mode: input.kind === "search" ? "search" : "inspection",
@@ -123,8 +130,9 @@ export function syntheticRegionalPlan(input: {
     const ends = deliveryEndpoints(input);
     const startLocal = toLocal(input.home, ends.a);
     const dest = toLocal(input.home, ends.b);
-    start[0] = startLocal.east;
-    start[1] = startLocal.north;
+    if (Math.hypot(startLocal.east, startLocal.north) > 1) {
+      tasks.push({ point: [startLocal.east, startLocal.north, cruise], kind: "outbound", photo: null });
+    }
     tasks.push({ point: [dest.east, dest.north, cruise], kind: "outbound", photo: null });
     tasks.push({ point: [dest.east, dest.north, cruise], kind: "deliver", photo: null });
     tasks.push({ point: [startLocal.east, startLocal.north, cruise], kind: "return", photo: null });
@@ -157,7 +165,7 @@ export function syntheticRegionalPlan(input: {
     }
     tasks.push({ point: [0, 0, cruise], kind: "return", photo: null });
   }
-  tasks.push({ point: start.slice(), kind: "return", photo: null });
+  if (mode !== "delivery") tasks.push({ point: start.slice(), kind: "return", photo: null });
   let previous = start, flightSeconds = 0;
   for (const task of tasks) {
     flightSeconds += Math.max(Math.hypot(task.point[0]! - previous[0]!, task.point[1]! - previous[1]!) / options.speed, Math.abs(task.point[2]! - previous[2]!) / options.climbSpeed);

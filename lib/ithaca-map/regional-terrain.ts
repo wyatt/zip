@@ -305,7 +305,7 @@ export async function createRegionalTerrain(
     proj.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     frustum.setFromProjectionMatrix(proj);
     const worldPerPixel = (camera.right - camera.left) / (camera.zoom * width);
-    const wanted = meta.tiles.filter((tile) => {
+    const candidates = meta.tiles.filter((tile) => {
       if (focus) return pathTiles.has(tile.id) && intersectsFocus(tile);
       return frustum.intersectsBox(new Box3(
         new Vector3(tile.west, meta.zMin - baseline, -tile.north),
@@ -314,9 +314,13 @@ export async function createRegionalTerrain(
     }).sort((a, b) =>
       Math.hypot(a.west + a.size / 2 - target.x, -a.north + a.size / 2 - target.z) -
       Math.hypot(b.west + b.size / 2 - target.x, -b.north + b.size / 2 - target.z)
-    ).slice(0, focus ? 2 : 8).map((tile, i) => ({
+    );
+    const manyRouteTiles = Boolean(focus && candidates.length > 2);
+    const budget = focus ? Math.min(candidates.length, 16) : 8;
+    const hiResCount = manyRouteTiles ? 0 : (focus || worldPerPixel < 2.5) ? (focus ? 2 : 4) : 0;
+    const wanted = candidates.slice(0, budget).map((tile, i) => ({
       tile,
-      level: (focus || worldPerPixel < 2.5) && i < (focus ? 2 : 4) ? 1 : 5,
+      level: i < hiResCount ? 1 : 5,
     }));
     desired = new Map(wanted.map((value) => [value.tile.id, value]));
     for (const [id, entry] of resident) if (!desired.has(id)) { detach(entry); resident.delete(id); }
