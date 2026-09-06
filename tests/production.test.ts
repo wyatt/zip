@@ -170,13 +170,18 @@ test("matching requires qualifications, capability, and service coverage", () =>
   expect(matchesRequirements(order, operator, { ...vehicle, integrationApproved: false })).toBe(true);
   expect(matchesRequirements(order, { ...operator, base: { lat: 0, lon: 0 } }, vehicle)).toBe(false);
 });
-test("acceptance prefers the nearest low-battery aircraft that can finish the job", () => {
+test("acceptance ranks by distance, then lowest battery", () => {
   const job = { kind: "inspection" as const, location: home, destinations: [home], altitudeM: 30, hoverSec: 10 };
   const farFull = { id: "far", home: { lat: home.lat + 0.02, lon: home.lon }, maxRadiusM: 8000, batteryPct: 55, hardwareId: "far" };
   const nearLow = { id: "near-low", home: { lat: home.lat + 0.0002, lon: home.lon }, maxRadiusM: 8000, batteryPct: 52, hardwareId: "wyatt-gsh-mini" };
   const nearHigh = { id: "near-high", home: { lat: home.lat + 0.0003, lon: home.lon }, maxRadiusM: 8000, batteryPct: 94, hardwareId: "wyatt-gsh-cargo" };
   const empty = { id: "empty", home, maxRadiusM: 8000, batteryPct: 8, hardwareId: "low" };
   expect(pickAcceptAircraft([farFull, nearHigh, nearLow, empty], job)?.id).toBe("near-low");
+  const parkedFar = { ...farFull, id: "live-near", position: { lat: home.lat + 0.0001, lon: home.lon }, batteryPct: 60 };
+  expect(pickAcceptAircraft([parkedFar, nearHigh, nearLow], job)?.id).toBe("live-near");
+  const closerHigh = { id: "closer-high", home: { lat: home.lat + 0.0001, lon: home.lon }, maxRadiusM: 8000, batteryPct: 94 };
+  const fartherLow = { id: "farther-low", home: { lat: home.lat + 0.0004, lon: home.lon }, maxRadiusM: 8000, batteryPct: 50 };
+  expect(pickAcceptAircraft([fartherLow, closerHigh], job)?.id).toBe("closer-high");
 });
 test("an operator can fly multiple jobs at once when each has its own aircraft", async () => {
   const f = await fixture();

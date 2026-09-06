@@ -288,7 +288,6 @@ export const SEEDED_VEHICLE_BATTERY_PCT: Record<string, number> = {
   "wyatt-gsh-cargo": 94,
 };
 export const SIM_BATTERY_DRAIN_PCT_PER_SEC = 0.05;
-export const ACCEPT_NEAREST_BAND_M = 300;
 
 export function seededBatteryPct(hardwareId: string, fallback = 100) {
   return SEEDED_VEHICLE_BATTERY_PCT[hardwareId] ?? fallback;
@@ -322,27 +321,29 @@ export function canCompleteJobWithBattery(
   }
 }
 
-/** Nearest aircraft that can finish the job; among those nearby, the lowest battery. */
-export function pickAcceptAircraft<T extends { home: GeoPoint; maxRadiusM: number; batteryPct?: number | null; liveBatteryPct?: number | null; hardwareId?: string }>(
+type AcceptCandidate = { home: GeoPoint; maxRadiusM: number; batteryPct?: number | null; liveBatteryPct?: number | null; hardwareId?: string; position?: GeoPoint | null };
+
+/** Closest aircraft first, then lowest battery. Aircraft that can finish the job rank above those that cannot. */
+export function rankAcceptAircraft<T extends AcceptCandidate>(
   vehicles: T[],
   job: { kind: JobKind; location: GeoPoint; destinations: GeoPoint[]; altitudeM: number; hoverSec: number },
-): T | undefined {
-  if (!vehicles.length) return undefined;
-  const scored = vehicles.map(vehicle => {
+): T[] {
+  return vehicles.map(vehicle => {
     const battery = resolvedBatteryPct(vehicle);
     return {
       vehicle,
       battery,
-      distanceM: metersBetween(vehicle.home, job.location),
+      distanceM: metersBetween(vehicle.position ?? vehicle.home, job.location),
       canComplete: canCompleteJobWithBattery(battery, job, vehicle.home, vehicle.maxRadiusM),
     };
-  });
-  const capable = scored.filter(item => item.canComplete);
-  const pool = capable.length ? capable : scored;
-  const nearest = Math.min(...pool.map(item => item.distanceM));
-  const band = pool.filter(item => item.distanceM <= nearest + ACCEPT_NEAREST_BAND_M);
-  band.sort((a, b) => a.battery - b.battery || a.distanceM - b.distanceM);
-  return band[0]?.vehicle;
+  }).sort((a, b) => Number(b.canComplete) - Number(a.canComplete) || a.distanceM - b.distanceM || a.battery - b.battery).map(item => item.vehicle);
+}
+
+export function pickAcceptAircraft<T extends AcceptCandidate>(
+  vehicles: T[],
+  job: { kind: JobKind; location: GeoPoint; destinations: GeoPoint[]; altitudeM: number; hoverSec: number },
+): T | undefined {
+  return rankAcceptAircraft(vehicles, job)[0];
 }
 
 export function operationStatusPending(state: OperationState) {

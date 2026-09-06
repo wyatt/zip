@@ -14,6 +14,7 @@ import {
   metersBetween,
   operationStatusPending,
   pickAcceptAircraft,
+  rankAcceptAircraft,
   preflightProblems,
   previewAcceptedFlight,
   remainingFlightSec,
@@ -959,16 +960,17 @@ function OperatorWorkspace({ account }: { account: Account }) {
     vehicles?.filter((vehicle) =>
       order?.eligibleVehicleIds.includes(vehicle._id),
     ) ?? [];
-  const recommendedVehicle =
-    order && availableVehicles.length
-      ? pickAcceptAircraft(
-          availableVehicles.map((item) => ({
-            ...item,
-            liveBatteryPct: item.telemetry?.sample?.batteryPct,
-          })),
-          order,
-        )
-      : undefined;
+  const rankedVehicles = order
+    ? rankAcceptAircraft(
+        availableVehicles.map((item) => ({
+          ...item,
+          liveBatteryPct: item.telemetry?.sample?.batteryPct,
+          position: item.telemetry?.sample?.position ?? item.home,
+        })),
+        order,
+      )
+    : availableVehicles;
+  const recommendedVehicle = rankedVehicles[0];
   const vehicle =
     availableVehicles.find((v) => v._id === selectedVehicle) ??
     recommendedVehicle ??
@@ -1004,8 +1006,8 @@ function OperatorWorkspace({ account }: { account: Account }) {
     if (operationId) setBoardTab("active");
   }, [operationId]);
   useEffect(() => {
-    setSelectedVehicle("");
-  }, [selectedOrder]);
+    setSelectedVehicle(recommendedVehicle?._id ?? "");
+  }, [selectedOrder, recommendedVehicle?._id]);
   const availableCount = eligible?.length ?? 0;
   const overlayingJob = !showActive && !!order;
   const overlayingFlight = showActive && !!operationId;
@@ -1099,6 +1101,7 @@ function OperatorWorkspace({ account }: { account: Account }) {
                     candidates.map((item) => ({
                       ...item,
                       liveBatteryPct: item.telemetry?.sample?.batteryPct,
+                      position: item.telemetry?.sample?.position ?? item.home,
                     })),
                     job,
                   ) ?? candidates[0];
@@ -1117,6 +1120,7 @@ function OperatorWorkspace({ account }: { account: Account }) {
                       className="job-row"
                       onClick={() => {
                         setSelectedOrder(job._id);
+                        setSelectedVehicle(match?._id ?? "");
                         setError("");
                       }}
                     >
@@ -1336,7 +1340,7 @@ function OperatorWorkspace({ account }: { account: Account }) {
                 value={vehicleId ?? ""}
                 onChange={(e) => setSelectedVehicle(e.target.value)}
               >
-                {availableVehicles.map((item) => {
+                {rankedVehicles.map((item) => {
                   const from = item.telemetry?.sample?.position ?? item.home;
                   const distance = metersBetween(from, order.location);
                   const battery = resolvedBatteryPct({
@@ -1344,9 +1348,10 @@ function OperatorWorkspace({ account }: { account: Account }) {
                     liveBatteryPct: item.telemetry?.sample?.batteryPct,
                     hardwareId: item.hardwareId,
                   });
+                  const best = item._id === recommendedVehicle?._id;
                   return (
                     <option key={item._id} value={item._id}>
-                      {item.name} · {formatDistanceM(distance)} · {Math.round(battery)}%
+                      {item.name} · {formatDistanceM(distance)} · {Math.round(battery)}%{best ? " · best" : ""}
                     </option>
                   );
                 })}
