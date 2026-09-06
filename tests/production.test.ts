@@ -1,7 +1,7 @@
 import { convexTest } from "convex-test";
 import { afterEach, expect, test, vi } from "vitest";
 import schema from "../convex/schema";
-import { api } from "../convex/_generated/api";
+import { api, internal } from "../convex/_generated/api";
 import { hashSecret } from "../convex/access";
 import { createFlightPlan, matchesRequirements, preflightProblems, requiredCapabilities, validateSample, type AircraftSample, type Capability } from "../lib/operations";
 
@@ -52,7 +52,7 @@ async function observeOwner(f: Awaited<ReturnType<typeof readyFixture>>, owner: 
 
 test("a fleet agent token lists and opens every operator aircraft", async () => {
   const f = await fixture();
-  const secondId = await f.operator.mutation(api.fleet.register, { name: "Second aircraft", hardwareId: "test-aircraft-2", environment: "simulated", capabilities, maxPayloadKg: 0, home, maxRadiusM: 100 });
+  const secondId = await f.operator.mutation(api.fleet.register, { name: "Second aircraft", hardwareId: "test-aircraft-2", environment: "simulated", capabilities, maxPayloadKg: 0, launchSiteName: "Home", maxRadiusM: 100 });
   const fleet = await f.t.query(api.agentLink.fleet, { token });
   expect(fleet.map(vehicle => vehicle.hardwareId).sort()).toEqual(["test-aircraft", "test-aircraft-2"]);
   const first = await f.t.mutation(api.agentLink.open, { token, vehicleId: f.vehicleId, instanceId: "fleet-instance-1", hardwareId: "test-aircraft", environment: "simulated", capabilities });
@@ -65,7 +65,7 @@ test("a fleet agent token lists and opens every operator aircraft", async () => 
 });
 test("operators can remove an idle aircraft from the fleet", async () => {
   const f = await fixture();
-  const extraId = await f.operator.mutation(api.fleet.register, { name: "Spare aircraft", hardwareId: "spare-aircraft", environment: "simulated", capabilities, maxPayloadKg: 0, home, maxRadiusM: 100 });
+  const extraId = await f.operator.mutation(api.fleet.register, { name: "Spare aircraft", hardwareId: "spare-aircraft", environment: "simulated", capabilities, maxPayloadKg: 0, launchSiteName: "Home", maxRadiusM: 100 });
   await expect(f.customer.mutation(api.fleet.remove, { vehicleId: extraId })).rejects.toThrow("operator account");
   await f.operator.mutation(api.workOrders.accept, { workOrderId: f.workOrderId, vehicleId: extraId, mode: "autonomous", manualControl: "remote" });
   await expect(f.operator.mutation(api.fleet.remove, { vehicleId: extraId })).rejects.toThrow("active operation");
@@ -93,11 +93,28 @@ test("customers cannot read other customers' orders or act as operators", async 
 });
 test("customer and operator accounts cannot cross roles", async () => {
   const f = await fixture();
-  const aircraft = { name: "My drone", hardwareId: "role-check-aircraft", environment: "simulated" as const, capabilities, maxPayloadKg: 0, home, maxRadiusM: 100, serviceRadiusM: 5000 };
+  const aircraft = { name: "My drone", hardwareId: "role-check-aircraft", environment: "simulated" as const, capabilities, maxPayloadKg: 0, launchSiteName: "Home", maxRadiusM: 100, serviceRadiusM: 5000 };
   await expect(f.customer.mutation(api.fleet.register, aircraft)).rejects.toThrow("operator account");
   expect((await f.customer.query(api.accounts.me, {}))?.operator).toBeNull();
   await expect(f.operator.mutation(api.workOrders.submit, { title: "Hover check", description: "Check the aircraft", kind: "flight_check", environment: "simulated", location: home, destinations: [], payloadKg: 0, altitudeM: 3, hoverSec: 5 })).rejects.toThrow("customer account");
   await expect(f.operator.query(api.workOrders.mine, {})).rejects.toThrow("customer account");
+});
+test("demo accounts auto-approve physical integration and follow a named launch site", async () => {
+  const f = await fixture();
+  await f.t.run(async ctx => {
+    const member = await ctx.db.query("members").withIndex("by_user", q => q.eq("userId", f.operatorId)).unique();
+    await ctx.db.patch(member!._id, { role: "demo" });
+  });
+  const moved = { lat: 38.9096, lon: -76.9986 };
+  await f.operator.mutation(api.accounts.savePresetLocations, { locations: [{ name: "Home", ...moved }], serviceRadiusM: 5000 });
+  const vehicleId = await f.operator.mutation(api.fleet.register, { name: "Demo Mini", hardwareId: "demo-physical-mini", environment: "aircraft", capabilities: [...capabilities, "camera"], maxPayloadKg: 0, cameraMp: 12, launchSiteName: "Home", maxRadiusM: 5000 });
+  const fleet = await f.operator.query(api.fleet.mine, {});
+  const registered = fleet.find(vehicle => vehicle._id === vehicleId);
+  expect(registered).toMatchObject({ integrationApproved: true, launchSiteName: "Home", home: moved });
+  const elsewhere = { lat: 38.91, lon: -77.0 };
+  await f.operator.mutation(api.accounts.savePresetLocations, { locations: [{ id: registered?.launchSiteId, name: "Home", ...elsewhere }], serviceRadiusM: 5000 });
+  const updated = (await f.operator.query(api.fleet.mine, {})).find(vehicle => vehicle._id === vehicleId);
+  expect(updated?.home).toEqual(elsewhere);
 });
 test("a demo account can request jobs and operate aircraft", async () => {
   const f = await fixture();
@@ -108,6 +125,8 @@ test("a demo account can request jobs and operate aircraft", async () => {
   const demoOrder = await f.operator.mutation(api.workOrders.submit, { title: "Demo hover", description: "Check both roles", kind: "flight_check", environment: "simulated", location: home, destinations: [], payloadKg: 0, altitudeM: 3, hoverSec: 5 });
   const mine = await f.operator.query(api.workOrders.mine, {});
   expect(mine.some(order => order._id === demoOrder)).toBe(true);
+  const waiting = await f.operator.query(api.workOrders.availableNearby, { workOrderId: demoOrder });
+  expect(waiting.some(vehicle => vehicle.vehicleId === f.vehicleId && vehicle.own)).toBe(true);
   const eligible = await f.operator.query(api.workOrders.eligible, {});
   expect(eligible.some(order => order._id === demoOrder)).toBe(true);
   const operationId = await f.operator.mutation(api.workOrders.accept, { workOrderId: demoOrder, vehicleId: f.vehicleId, mode: "autonomous", manualControl: "remote" });
@@ -118,7 +137,7 @@ test("a demo account can request jobs and operate aircraft", async () => {
 test("registering drone specifications creates an operator without an invitation", async () => {
   const f = await fixture();
   await f.applicant.mutation(api.accounts.savePresetLocations, { locations: [{ name: "Home", ...home }, { name: "Base One", lat: 42.36796, lon: -71.08029 }], serviceRadiusM: 7000 });
-  const vehicleId = await f.applicant.mutation(api.fleet.register, { name: "My drone", model: "Test model", hardwareId: "self-registered-aircraft", environment: "aircraft", capabilities: [...capabilities, "camera", "payload"], maxPayloadKg: 2, home, maxRadiusM: 500, serviceRadiusM: 7000 });
+  const vehicleId = await f.applicant.mutation(api.fleet.register, { name: "My drone", model: "Test model", hardwareId: "self-registered-aircraft", environment: "aircraft", capabilities: [...capabilities, "camera", "payload"], maxPayloadKg: 2, launchSiteName: "Home", maxRadiusM: 500, serviceRadiusM: 7000 });
   const account = await f.applicant.query(api.accounts.me, {});
   expect(account?.member?.role).toBe("operator");
   expect(account?.operator).toMatchObject({ approved: true, acceptingJobs: true, serviceRadiusM: 7000 });
@@ -130,7 +149,7 @@ test("registering drone specifications creates an operator without an invitation
 });
 test("invalid registration creates no operator, and suspended operators cannot re-enroll", async () => {
   const f = await fixture();
-  const args = { name: "My drone", hardwareId: "registration-check", environment: "simulated" as const, capabilities, maxPayloadKg: 0, home, maxRadiusM: 100, serviceRadiusM: 5000 };
+  const args = { name: "My drone", hardwareId: "registration-check", environment: "simulated" as const, capabilities, maxPayloadKg: 0, launchSiteName: "Home", maxRadiusM: 100, serviceRadiusM: 5000 };
   await expect(f.applicant.mutation(api.fleet.register, args)).rejects.toThrow("account settings");
   expect((await f.applicant.query(api.accounts.me, {}))?.operator).toBeNull();
   await f.applicant.mutation(api.accounts.savePresetLocations, { locations: [{ name: "Home", ...home }], serviceRadiusM: 5000 });
@@ -273,4 +292,42 @@ test("camera sessions are scoped to the job and authenticated aircraft", async (
   await expect(f.t.mutation(api.cameras.publish, { ...camera, url: "http://insecure.example.test/stream" })).rejects.toThrow("HTTPS");
   vi.setSystemTime(Date.now() + 61000);
   expect(await f.customer.query(api.cameras.forOperation, { operationId: f.operationId })).toBeNull();
+});
+
+test("seeded DC and Ithaca aircraft appear while a matching job is waiting", async () => {
+  const f = await fixture();
+  const seeded = await f.t.mutation(internal.seed.demoCoverage, {});
+  expect(seeded.operatorsCreated).toBe(7);
+  expect(seeded.vehiclesCreated).toBeGreaterThan(10);
+  expect(await f.t.mutation(internal.seed.demoCoverage, {})).toEqual({ operatorsCreated: 0, vehiclesCreated: 0 });
+  const ithaca = { lat: 42.443, lon: -76.5019 };
+  const orderId = await f.customer.mutation(api.workOrders.submit, {
+    title: "Ithaca drop",
+    description: "Pharmacy",
+    kind: "deliver",
+    environment: "aircraft",
+    location: ithaca,
+    destinations: [ithaca],
+    payloadKg: 0.4,
+    altitudeM: 8,
+    hoverSec: 10,
+  });
+  const nearby = await f.customer.query(api.workOrders.availableNearby, { workOrderId: orderId });
+  expect(nearby.length).toBeGreaterThan(0);
+  expect(nearby.every(vehicle => vehicle.model === "Delivery Drone")).toBe(true);
+  const searchId = await f.customer.mutation(api.workOrders.submit, {
+    title: "Ithaca search",
+    description: "Trail",
+    kind: "search",
+    environment: "aircraft",
+    location: ithaca,
+    destinations: [ithaca],
+    payloadKg: 0,
+    altitudeM: 8,
+    hoverSec: 10,
+  });
+  const searchNearby = await f.customer.query(api.workOrders.availableNearby, { workOrderId: searchId });
+  expect(searchNearby.length).toBeGreaterThan(0);
+  expect(searchNearby.every(vehicle => vehicle.model !== "Delivery Drone" && vehicle.model !== "Long-Range Drone" && vehicle.model !== "High-Speed / FPV Drone")).toBe(true);
+  await expect(f.stranger.query(api.workOrders.availableNearby, { workOrderId: orderId })).resolves.toEqual([]);
 });

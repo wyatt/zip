@@ -15,6 +15,9 @@ import { areaGeometry, surveyArea, type SurveyArea } from "@/lib/areas";
 import { CameraPanel } from "./camera-panel";
 import { OperatorSplit } from "./operator-split";
 import { FALLBACK_LOCATION, useBrowserLocation } from "./use-browser-location";
+import { DRONE_TYPES, droneTypeByModel } from "@/lib/aircraft";
+import { ArrowLeft } from "pixelarticons/react/ArrowLeft";
+import { Trash } from "pixelarticons/react/Trash";
 
 export const INITIAL_LOCATION = FALLBACK_LOCATION;
 export function messageOf(error: unknown) {
@@ -35,13 +38,25 @@ export function ProductionWorkspace({ role }: { role: "request" | "operator" }) 
   return <AuthGate surface={surface}>{account => <AppShell account={account} surface={surface}>{role === "request" ? <CustomerWorkspace /> : account.operator?.approved ? <OperatorWorkspace /> : <OperatorOnboarding account={account} />}</AppShell>}</AuthGate>;
 }
 
-function offsetPoint(point: GeoPoint, meters: number): GeoPoint {
-  return { lat: point.lat + meters / 111320, lon: point.lon + meters / (111320 * Math.cos((point.lat * Math.PI) / 180)) };
+function offsetPoint(point: GeoPoint, northM: number, eastM = 0): GeoPoint {
+  return { lat: point.lat + northM / 111320, lon: point.lon + eastM / (111320 * Math.cos((point.lat * Math.PI) / 180)) };
 }
 function workOrderStatus(status: string) {
   if (status === "open") return "Finding an operator";
   if (status === "assigned") return "In progress";
   return status;
+}
+function RequestHeading({ title, onBack, backLabel = "Back to requests" }: { title: string; onBack: () => void; backLabel?: string }) {
+  return (
+    <div className="page-heading">
+      <div className="page-title">
+        <button type="button" className="back-icon" aria-label={backLabel} onClick={onBack}>
+          <ArrowLeft width={28} height={28} aria-hidden />
+        </button>
+        <h1>{title}</h1>
+      </div>
+    </div>
+  );
 }
 
 function CustomerWorkspace() {
@@ -65,7 +80,7 @@ function CustomerWorkspace() {
   useEffect(() => {
     if (restored.current || !orders || !operationId) return;
     const match = orders.find(order => order.operationId === operationId);
-    if (!match) return;
+    if (!match || match.status === "cancelled") return;
     restored.current = true;
     setSelectedId(match._id);
     setPage("mission");
@@ -116,22 +131,35 @@ function CustomerWorkspace() {
   }
   const heading = page === "compose" ? `Request ${mode.label}` : page === "mission" ? selected?.title ?? "Mission" : "Requests";
   const split = page !== "home";
+  const missions = orders?.filter(order => order.status !== "cancelled");
+  useEffect(() => {
+    if (page === "mission" && selected?.status === "cancelled") goHome();
+  }, [page, selected?.status]);
   return (
     <main className={`workspace operator-retro request-page${split ? " request-split" : " request-catalog"}`}>
       {page === "home" && (
         <>
           {error && <p className="error" role="alert">{error}</p>}
           <section className="mission-section">
-            <div className="section-title"><h2>Your missions</h2><span className="count">{orders?.length ?? 0}</span></div>
-            {orders === undefined ? <p className="muted">Loading missions…</p> : orders.length === 0 ? <p className="muted">No missions yet. Choose a flight type below to send a request.</p> : (
+            <div className="section-title"><h2>Your missions</h2><span className="count">{missions?.length ?? 0}</span></div>
+            {missions === undefined ? <p className="muted">Loading missions…</p> : missions.length === 0 ? <p className="muted">No missions yet. Choose a flight type below to send a request.</p> : (
               <div className="mission-strip">
-                {orders.map(order => (
-                  <button type="button" className="mission-card" key={order._id} onClick={() => openMission(order._id, order.operationId ?? null)}>
-                    <span className="job-person">{order.title}</span>
-                    <span className="job-description">{JOB_LABELS[order.kind]} · {order.environment === "simulated" ? "Simulation" : "Aircraft"}</span>
-                    <span className={`status ${order.status}`}>{workOrderStatus(order.status)}</span>
-                  </button>
-                ))}
+                {missions.map(order => {
+                  const type = DRONE_TYPES.find(item => item.label === order.vehicleModel);
+                  const confirmed = order.status !== "open" && !!type;
+                  return (
+                    <button type="button" className="mission-card" key={order._id} onClick={() => openMission(order._id, order.operationId ?? null)}>
+                      <span className="mission-copy">
+                        <span className="job-person">{order.title}</span>
+                        <span className="job-description">{JOB_LABELS[order.kind]} · {order.environment === "simulated" ? "Simulation" : "Aircraft"}</span>
+                      </span>
+                      <span className={`mission-art${confirmed ? "" : " silhouette"}`} aria-hidden>
+                        <img src={type && confirmed ? type.src : "/drones/dji-mini-4k.png"} alt="" />
+                      </span>
+                      <span className={`status ${order.status}`}>{workOrderStatus(order.status)}</span>
+                    </button>
+                  );
+                })}
               </div>
             )}
           </section>
@@ -155,10 +183,7 @@ function CustomerWorkspace() {
       )}
       {page === "compose" && (
         <OperatorSplit storageKey="iris-request-split" board={<>
-          <div className="page-heading">
-            <div><h1>{heading}</h1></div>
-            <div className="heading-actions"><button type="button" className="text-button" onClick={goHome}>Back to requests</button></div>
-          </div>
+          <RequestHeading title={heading} onBack={goHome} />
           <section className="panel">
             <p className="eyebrow">{mode.label.toUpperCase()}</p>
             <h2>Configure this job</h2>
@@ -212,36 +237,66 @@ function CustomerWorkspace() {
         </>} map={<FlightMap chrome home={location ?? here} selected={geometry?.center ?? location ?? undefined} area={area} route={geometry?.destinations} selectionPrompt={isAreaJob ? `Select the ${corner === "first" ? "first" : "opposite"} corner of the ${kind} area` : "Choose the job location"} onSelect={chooseLocation} />} />
       )}
       {page === "mission" && !selected && (
-        <div className="page-heading">
-          <div><h1>Mission</h1></div>
-          <div className="heading-actions"><button type="button" className="text-button" onClick={goHome}>Back to requests</button></div>
-        </div>
+        <RequestHeading title="Mission" onBack={goHome} />
       )}
       {page === "mission" && selected && (
-        <OperatorSplit storageKey="iris-request-split" board={<>
-          <div className="page-heading">
-            <div><h1>{heading}</h1></div>
-            <div className="heading-actions">
-              {selected.status === "open" && <button type="button" className="text-button" onClick={async () => { try { await cancel({ workOrderId: selected._id }); } catch (caught) { setError(messageOf(caught)); } }}>Cancel request</button>}
-              <button type="button" className="text-button" onClick={goHome}>Back to requests</button>
-            </div>
-          </div>
+        <OperatorSplit overlay storageKey="iris-request-split" board={<div className="job-float">
+          <RequestHeading title={heading} onBack={goHome} />
           {selected.operationId ? <OperationPanel operationId={selected.operationId} operator={false} map={false} /> : (
-            <section className="panel">
-              <p className="eyebrow">{JOB_LABELS[selected.kind].toUpperCase()}</p>
-              <h2>{selected.status === "cancelled" ? "Request cancelled" : "Finding a qualified operator"}</h2>
-              <p className="muted">{selected.description || "No additional instructions."}</p>
-              <p className="selection-summary">{selected.altitudeM} m altitude · {selected.hoverSec} s hover · {selected.environment === "simulated" ? "Simulation" : "Aircraft"}</p>
-              {selected.status === "open" && <p className="muted">Your request appears live for operators whose qualifications, service area, and aircraft match. This page updates when an operator accepts. You can send another job from Requests at any time.</p>}
-            </section>
+            <WaitingPanel order={selected} />
           )}
           {error && <p className="error" role="alert">{error}</p>}
-        </>} map={selected.operationId ? <OperatorLiveMap operationId={selected.operationId} /> : <FlightMap chrome={false} home={selected.location} selected={selected.location} area={selected.area} route={selected.area ? selected.destinations : undefined} />} />
+          {selected.status === "open" && (
+            <button
+              type="button"
+              className="cancel-request"
+              aria-label="Cancel request"
+              onClick={async () => { try { await cancel({ workOrderId: selected._id }); goHome(); } catch (caught) { setError(messageOf(caught)); } }}
+            >
+              <Trash width={22} height={22} aria-hidden />
+            </button>
+          )}
+        </div>} map={selected.operationId ? <OperatorLiveMap operationId={selected.operationId} /> : <WaitingMap order={selected} />} />
       )}
     </main>
   );
 }
 
+type NearbyAircraft = { vehicleId: Id<"vehicles">; name: string; model: string | null; operatorName: string; environment: Environment; own: boolean; position: GeoPoint };
+function spreadFleet(nearby: NearbyAircraft[]) {
+  const groups: NearbyAircraft[][] = [];
+  for (const vehicle of nearby) {
+    const group = groups.find(entry => metersBetween(entry[0]!.position, vehicle.position) < 180);
+    if (group) group.push(vehicle);
+    else groups.push([vehicle]);
+  }
+  const spacing = 55;
+  return groups.flatMap(group => group.map((vehicle, index) => {
+    const type = droneTypeByModel(vehicle.model ?? undefined);
+    const eastM = (index - (group.length - 1) / 2) * spacing;
+    return {
+      id: vehicle.vehicleId,
+      src: type.src,
+      label: vehicle.own ? `${vehicle.name} · Your fleet` : vehicle.model ? `${vehicle.name} · ${vehicle.model}` : vehicle.name,
+      point: offsetPoint(vehicle.position, 0, eastM),
+    };
+  }));
+}
+function WaitingMap({ order }: { order: { _id: Id<"workOrders">; status: string; location: GeoPoint; area?: SurveyArea; destinations: GeoPoint[] } }) {
+  const nearby = useQuery(api.workOrders.availableNearby, order.status === "open" ? { workOrderId: order._id } : "skip");
+  return <FlightMap chrome={false} home={order.location} selected={order.location} area={order.area} route={order.area ? order.destinations : undefined} fleet={spreadFleet(nearby ?? [])} />;
+}
+function WaitingPanel({ order }: { order: { _id: Id<"workOrders">; status: string; kind: RequestKind | "flight_check"; description: string; altitudeM: number; hoverSec: number; environment: Environment } }) {
+  return (
+    <section className="panel">
+      <p className="eyebrow">{JOB_LABELS[order.kind].toUpperCase()}</p>
+      <h2>{order.status === "cancelled" ? "Request cancelled" : "Finding a qualified operator"}</h2>
+      <p className="muted">{order.description || "No additional instructions."}</p>
+      <p className="selection-summary">{order.altitudeM} m altitude · {order.hoverSec} s hover · {order.environment === "simulated" ? "Simulation" : "Aircraft"}</p>
+      {order.status === "open" && <p className="muted">Qualified aircraft nearby are shown on the map. This page updates when an operator accepts.</p>}
+    </section>
+  );
+}
 function OperatorWorkspace() {
   const eligible = useQuery(api.workOrders.eligible), operations = useQuery(api.operations.mine), vehicles = useQuery(api.fleet.mine);
   const { point: here } = useBrowserLocation();
@@ -249,33 +304,57 @@ function OperatorWorkspace() {
   const [operationId, selectOperation] = useOperationSelection();
   const [boardTab, setBoardTab] = useState<"available" | "active">("available");
   const [selectedOrder, setSelectedOrder] = useState<Id<"workOrders"> | null>(null), [selectedVehicle, setSelectedVehicle] = useState<string>("");
-  const [mode, setMode] = useState<ControlMode>("autonomous"), [manualControl, setManualControl] = useState<"remote" | "computer">("remote");
+  const [mode, setMode] = useState<ControlMode>("manual");
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const order = eligible?.find(order => order._id === selectedOrder);
   const availableVehicles = vehicles?.filter(vehicle => order?.eligibleVehicleIds.includes(vehicle._id)) ?? [];
-  const vehicleId = availableVehicles.find(v => v._id === selectedVehicle)?._id ?? availableVehicles[0]?._id;
+  const vehicle = availableVehicles.find(v => v._id === selectedVehicle) ?? availableVehicles[0];
+  const vehicleId = vehicle?._id;
+  const manualControl = vehicle?.capabilities.includes("manual_computer") ? "computer" as const : "remote" as const;
   const showActive = boardTab === "active";
   useEffect(() => { if (operationId) setBoardTab("active"); }, [operationId]);
   const availableCount = eligible?.length ?? 0;
+  const overlayingJob = !showActive && !!order;
+  const overlayingFlight = showActive && !!operationId;
+  const overlay = overlayingJob || overlayingFlight;
+  function closeOverlay() {
+    setError("");
+    if (overlayingFlight) selectOperation(null);
+    else setSelectedOrder(null);
+  }
+  useEffect(() => {
+    if (!overlay) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") closeOverlay();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [overlay, overlayingFlight]);
+  const listBoard = <>
+    <div className="page-heading operator-flight-tabs" role="tablist" aria-label="Flight lists">
+      <button type="button" role="tab" id="operator-tab-available" aria-selected={!showActive} aria-controls="operator-panel-available" className={`flight-tab ${showActive ? "" : "selected"}`} onClick={() => setBoardTab("available")}>
+        Available
+        {availableCount > 0 && <span className="tab-badge" aria-label={`${availableCount} available ${availableCount === 1 ? "job" : "jobs"}`}>{availableCount}</span>}
+      </button>
+      <button type="button" role="tab" id="operator-tab-active" aria-selected={showActive} aria-controls="operator-panel-active" className={`flight-tab ${showActive ? "selected" : ""}`} onClick={() => setBoardTab("active")}>Active</button>
+    </div>
+    {!showActive && <div id="operator-panel-available" role="tabpanel" aria-labelledby="operator-tab-available">
+      {eligible === undefined ? <p>Loading jobs…</p> : eligible.length === 0 ? <p className="muted">No matching jobs right now. Jobs appear here based on your qualifications, service area, and available aircraft.</p> : <div className="job-list">{eligible.map(job => <button className="job-row" key={job._id} onClick={() => { setSelectedOrder(job._id); setError(""); }}><span className="job-person">{job.title}<span>↗</span></span><span className="job-description">{JOB_LABELS[job.kind]} · {job.environment === "simulated" ? "Simulation" : "Aircraft"}</span></button>)}</div>}
+    </div>}
+    {showActive && <div id="operator-panel-active" role="tabpanel" aria-labelledby="operator-tab-active">
+      {operations === undefined ? <p>Loading flights…</p> : operations.length === 0 ? <p className="muted">Accepted jobs will appear here.</p> : <div className="job-list">{operations.map(operation => <button className="job-row" key={operation._id} onClick={() => { selectOperation(operation._id); setSelectedOrder(null); }}><span className="job-person">Flight #{operation._id.slice(-6)}</span><span className={`status ${operation.state}`}>{OPERATION_LABELS[operation.state]}</span></button>)}</div>}
+    </div>}
+    {error && <p className="error" role="alert">{error}</p>}
+  </>;
+  const overlayBoard = <div className="job-float">
+    <RequestHeading title={overlayingJob ? (order?.title ?? "Job") : `Flight #${operationId?.slice(-6) ?? ""}`} onBack={closeOverlay} backLabel="Back to jobs" />
+    {overlayingJob && order && <section className="panel"><p className="eyebrow">JOB REQUIREMENTS</p><p className="muted">{order.description || "No additional instructions."}</p><p className="selection-summary">{order.altitudeM} m altitude · {order.hoverSec} s hover</p><form onSubmit={async event => { event.preventDefault(); if (!vehicleId) return; setBusy(true); setError(""); try { const id = await accept({ workOrderId: order._id, vehicleId, mode, manualControl }); selectOperation(id); setSelectedOrder(null); } catch (error) { setError(messageOf(error)); } finally { setBusy(false); } }}><label>Aircraft<select value={vehicleId ?? ""} onChange={e => setSelectedVehicle(e.target.value)}>{availableVehicles.map(vehicle => <option key={vehicle._id} value={vehicle._id}>{vehicle.name}</option>)}</select></label><fieldset className="flight-control"><legend>Flight control</legend><label className="mode-choice"><input type="radio" name="mode" value="manual" checked={mode === "manual"} onChange={() => setMode("manual")} /><span>Manual<small>You fly; telemetry verifies the flight steps.</small></span></label><label className="mode-choice"><input type="radio" name="mode" value="autonomous" checked={mode === "autonomous"} onChange={() => setMode("autonomous")} /><span>Autonomous <span className="beta-tag">Beta</span><small>The local agent executes the approved plan.</small></span></label></fieldset><button className="primary" disabled={busy || !vehicleId}>{busy ? "Assigning…" : "Accept job & create plan"}<span>↗</span></button></form></section>}
+    {overlayingFlight && operationId && <OperationPanel operationId={operationId} operator map={false} />}
+    {error && <p className="error" role="alert">{error}</p>}
+  </div>;
   return <main className="workspace operator-retro"><OperatorSplit
-    board={<>
-      <div className="page-heading operator-flight-tabs" role="tablist" aria-label="Flight lists">
-        <button type="button" role="tab" id="operator-tab-available" aria-selected={!showActive} aria-controls="operator-panel-available" className={`flight-tab ${showActive ? "" : "selected"}`} onClick={() => setBoardTab("available")}>
-          Available
-          {availableCount > 0 && <span className="tab-badge" aria-label={`${availableCount} available ${availableCount === 1 ? "job" : "jobs"}`}>{availableCount}</span>}
-        </button>
-        <button type="button" role="tab" id="operator-tab-active" aria-selected={showActive} aria-controls="operator-panel-active" className={`flight-tab ${showActive ? "selected" : ""}`} onClick={() => setBoardTab("active")}>Active</button>
-      </div>
-      {!showActive && <div id="operator-panel-available" role="tabpanel" aria-labelledby="operator-tab-available">
-        <section className="panel">{eligible === undefined ? <p>Loading jobs…</p> : eligible.length === 0 ? <p className="muted">No matching jobs right now. Jobs appear here based on your qualifications, service area, and available aircraft.</p> : <div className="job-list">{eligible.map(job => <button className={`job-row ${selectedOrder === job._id ? "selected" : ""}`} key={job._id} onClick={() => { setSelectedOrder(job._id); setError(""); }}><span className="job-person">{job.title}<span>↗</span></span><span className="job-description">{JOB_LABELS[job.kind]} · {job.environment === "simulated" ? "Simulation" : "Aircraft"}</span></button>)}</div>}</section>
-        {order && <section className="panel"><p className="eyebrow">JOB REQUIREMENTS</p><h2>{order.title}</h2><p className="muted">{order.description || "No additional instructions."}</p><p className="selection-summary">{order.altitudeM} m altitude · {order.hoverSec} s hover</p><form onSubmit={async event => { event.preventDefault(); if (!vehicleId) return; setBusy(true); setError(""); try { const id = await accept({ workOrderId: order._id, vehicleId, mode, manualControl }); selectOperation(id); setSelectedOrder(null); } catch (error) { setError(messageOf(error)); } finally { setBusy(false); } }}><label>Aircraft<select value={vehicleId ?? ""} onChange={e => setSelectedVehicle(e.target.value)}>{availableVehicles.map(vehicle => <option key={vehicle._id} value={vehicle._id}>{vehicle.name}</option>)}</select></label><fieldset><legend>Flight control</legend><label className="mode-choice"><input type="radio" name="mode" value="autonomous" checked={mode === "autonomous"} onChange={() => setMode("autonomous")} /><span>Autonomous<small>The local agent executes the approved plan.</small></span></label><label className="mode-choice"><input type="radio" name="mode" value="manual" checked={mode === "manual"} onChange={() => setMode("manual")} /><span>Manual<small>You fly; telemetry verifies the flight steps.</small></span></label></fieldset><label>Manual / takeover control<select value={manualControl} onChange={e => setManualControl(e.target.value as "remote" | "computer")}><option value="remote">Physical remote</option><option value="computer">Computer controls</option></select></label><button className="primary" disabled={busy || !vehicleId}>{busy ? "Assigning…" : "Accept job & create plan"}<span>↗</span></button></form></section>}
-      </div>}
-      {showActive && <div id="operator-panel-active" role="tabpanel" aria-labelledby="operator-tab-active">
-        <section className="panel"><div className="job-list">{operations?.map(operation => <button className={`job-row ${operationId === operation._id ? "selected" : ""}`} key={operation._id} onClick={() => { selectOperation(operation._id); setSelectedOrder(null); }}><span className="job-person">Flight #{operation._id.slice(-6)}</span><span className={`status ${operation.state}`}>{OPERATION_LABELS[operation.state]}</span></button>)}</div>{operations === undefined ? <p>Loading flights…</p> : operations.length === 0 && <p className="muted">Accepted jobs will appear here.</p>}</section>
-        {operationId && <OperationPanel operationId={operationId} operator map={false} />}
-      </div>}
-      {error && <p className="error" role="alert">{error}</p>}
-    </>}
+    overlay={overlay}
+    board={overlay ? overlayBoard : listBoard}
     map={showActive && operationId ? <OperatorLiveMap operationId={operationId} /> : <FlightMap chrome={false} home={order?.location ?? vehicles?.[0]?.home ?? here} selected={order?.location} area={order?.area} route={order?.area ? order.destinations : undefined} />}
   /></main>;
 }

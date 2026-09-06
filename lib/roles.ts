@@ -10,6 +10,9 @@ export function isOperatorRole(role: string | undefined) {
 export function isDemoRole(role: string | undefined) {
   return role === "demo";
 }
+export function physicalIntegrationAllowed(integrationApproved: boolean, role?: string) {
+  return integrationApproved || isDemoRole(role);
+}
 export function homeForRole(role: string | undefined) {
   return role === "customer" ? "/request" : "/operator";
 }

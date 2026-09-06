@@ -20,6 +20,7 @@ import type * as http from "../http.js";
 import type * as manualControl from "../manualControl.js";
 import type * as operations from "../operations.js";
 import type * as operationsSchema from "../operationsSchema.js";
+import type * as seed from "../seed.js";
 import type * as workOrders from "../workOrders.js";
 
 import type {
@@ -41,6 +42,7 @@ declare const fullApi: ApiFromModules<{
   manualControl: typeof manualControl;
   operations: typeof operations;
   operationsSchema: typeof operationsSchema;
+  seed: typeof seed;
   workOrders: typeof workOrders;
 }>;
 

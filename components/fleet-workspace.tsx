@@ -460,9 +460,10 @@ function AddAircraftModal({
     model: string;
     serviceRadiusM: number;
     maxPayloadKg: number;
-    cameraMp?: number;
-    home: { lat: number; lon: number };
-    maxRadiusM: number;
+            cameraMp?: number;
+            launchSiteId?: string;
+            launchSiteName: string;
+            maxRadiusM: number;
   }) => Promise<void>;
 }) {
   const [typeId, setTypeId] = useState(DRONE_TYPES[0].id);
@@ -576,7 +577,8 @@ function AddAircraftModal({
               serviceRadiusM: range,
               maxPayloadKg: environment === "simulated" ? 25 : payload,
               ...(environment === "aircraft" && tags.includes("camera") ? { cameraMp } : {}),
-              home: { lat: site.lat, lon: site.lon },
+              launchSiteId: site.id,
+              launchSiteName: site.name,
               maxRadiusM: range,
             });
           }}

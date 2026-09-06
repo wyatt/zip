@@ -56,6 +56,7 @@ test("private customer request → self-registered operator → provisioned loca
     await expect(customer.getByRole("heading", { name: "Finding a qualified operator" })).toBeVisible();
     await operator.getByRole("link", { name: "Dashboard", exact: true }).click();
     await operator.getByRole("button").filter({ hasText: `Stability check ${suffix}` }).click();
+    await operator.locator("input[name=mode][value=autonomous]").check();
     await operator.getByRole("button", { name: "Accept job & create plan", exact: false }).click();
     const start = operator.getByRole("button", { name: "Start flight", exact: false });
     await expect(start).toBeEnabled({ timeout: 20000 });
@@ -85,7 +86,6 @@ test("private customer request → self-registered operator → provisioned loca
       await customer.getByRole("button", { name: "Use map center", exact: true }).click();
       await customer.getByRole("button", { name: "Submit request", exact: false }).click();
       await operator.getByRole("button").filter({ hasText: title }).click();
-      await operator.getByLabel("Manual / takeover control").selectOption("computer");
       await operator.locator(`input[name=mode][value=${manual ? "manual" : "autonomous"}]`).check();
       await operator.getByRole("button", { name: "Accept job & create plan", exact: false }).click();
       await expect(operator.getByRole("button", { name: "Start flight", exact: false })).toBeEnabled({ timeout: 15000 });

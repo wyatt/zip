@@ -4,6 +4,9 @@ import { internalMutation, mutation, query } from "./_generated/server";
 import { requireUser, requireOperatorAccount, requireAdmin, requireOperator, hashSecret } from "./access";
 import { geo, jobKind, presetLocation } from "./operationsSchema";
 import { assertGeo } from "../lib/operations";
+import { assignLaunchSiteIds } from "../lib/launch-sites";
+import { isDemoRole } from "../lib/roles";
+import { syncFleetLaunchSites } from "./fleet";
 
 export const me = query({ args: {}, handler: async ctx => {
   const userId = await getAuthUserId(ctx);
@@ -33,7 +36,7 @@ export const redeemInvite = mutation({ args: { token: v.string(), base: geo, ser
   if (!Number.isFinite(args.serviceRadiusM) || args.serviceRadiusM < 100 || args.serviceRadiusM > 100000) throw new Error("Service radius must be 100–100,000 meters.");
   await ctx.db.patch(member._id, { role: member.role === "admin" || member.role === "demo" ? member.role : "operator" });
   const profile = await ctx.db.query("operatorProfiles").withIndex("by_user", q => q.eq("userId", member.userId)).unique();
-  const fields = { approved: true, acceptingJobs: true, qualifications: ["flight_check" as const], base: args.base, serviceRadiusM: args.serviceRadiusM, presetLocations: [{ name: "Home", lat: args.base.lat, lon: args.base.lon }] };
+  const fields = { approved: true, acceptingJobs: true, qualifications: ["flight_check" as const], base: args.base, serviceRadiusM: args.serviceRadiusM, presetLocations: assignLaunchSiteIds([{ name: "Home", lat: args.base.lat, lon: args.base.lon }]) };
   if (profile) await ctx.db.patch(profile._id, fields); else await ctx.db.insert("operatorProfiles", { userId: member.userId, ...fields });
   await ctx.db.patch(invite._id, { redeemedBy: member.userId });
 } });
@@ -44,16 +47,19 @@ export const updateAvailability = mutation({ args: { acceptingJobs: v.boolean() 
 export const savePresetLocations = mutation({ args: { locations: v.array(presetLocation), serviceRadiusM: v.optional(v.number()) }, handler: async (ctx, args) => {
   const member = await requireOperatorAccount(ctx);
   if (args.locations.length > 20) throw new Error("You can save at most 20 launch sites.");
+  const locations = assignLaunchSiteIds(args.locations.map(location => ({
+    id: location.id,
+    name: location.name.trim(),
+    lat: location.lat,
+    lon: location.lon,
+  })));
   const names = new Set<string>();
-  const locations = [];
-  for (const location of args.locations) {
-    const name = location.name.trim();
-    if (name.length < 1 || name.length > 40) throw new Error("Each launch site needs a name of 1–40 characters.");
-    const key = name.toLowerCase();
+  for (const location of locations) {
+    if (location.name.length < 1 || location.name.length > 40) throw new Error("Each launch site needs a name of 1–40 characters.");
+    const key = location.name.toLowerCase();
     if (names.has(key)) throw new Error("Launch site names must be unique.");
     names.add(key);
     assertGeo({ lat: location.lat, lon: location.lon });
-    locations.push({ name, lat: location.lat, lon: location.lon });
   }
   if (locations.length < 1) throw new Error("Add at least one launch site.");
   const serviceRadiusM = args.serviceRadiusM;
@@ -65,6 +71,11 @@ export const savePresetLocations = mutation({ args: { locations: v.array(presetL
   const profile = await ctx.db.query("operatorProfiles").withIndex("by_user", q => q.eq("userId", member.userId)).unique();
   if (profile) {
     await ctx.db.patch(profile._id, { presetLocations: locations, base, ...(serviceRadiusM !== undefined ? { serviceRadiusM } : {}) });
+    await syncFleetLaunchSites(ctx, member.userId, locations);
+    if (isDemoRole(member.role)) {
+      const vehicles = await ctx.db.query("vehicles").withIndex("by_operator", q => q.eq("operatorId", member.userId)).take(100);
+      for (const vehicle of vehicles) if (!vehicle.integrationApproved) await ctx.db.patch(vehicle._id, { integrationApproved: true });
+    }
     return profile._id;
   }
   return ctx.db.insert("operatorProfiles", {
@@ -95,6 +106,8 @@ export const convertToDemo = internalMutation({ args: { memberId: v.id("members"
   if (!member) throw new Error("Account not found.");
   if (member.role === "admin") throw new Error("Administrator accounts cannot become demo accounts.");
   await ctx.db.patch(memberId, { role: "demo" });
+  const vehicles = await ctx.db.query("vehicles").withIndex("by_operator", q => q.eq("operatorId", member.userId)).take(100);
+  for (const vehicle of vehicles) if (!vehicle.integrationApproved) await ctx.db.patch(vehicle._id, { integrationApproved: true });
   return null;
 } });
 export const storeInvite = internalMutation({ args: { email: v.string(), tokenHash: v.string() }, handler: async (ctx, args) => {

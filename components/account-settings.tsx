@@ -9,7 +9,7 @@ import { messageOf } from "./production-workspace";
 import { useBrowserLocation } from "./use-browser-location";
 import type { GeoPoint } from "@/lib/operations";
 
-type DraftLocation = { name: string; lat: string; lon: string };
+type DraftLocation = { id?: string; name: string; lat: string; lon: string };
 
 function parsedPoint(location: DraftLocation): GeoPoint | null {
   const lat = Number(location.lat);
@@ -35,6 +35,7 @@ function LocationSettings({ account }: { account: Account }) {
   const { point: here } = useBrowserLocation();
   const [locations, setLocations] = useState<DraftLocation[]>(() =>
     (account.operator?.presetLocations ?? []).map((location) => ({
+      id: location.id,
       name: location.name,
       lat: String(location.lat),
       lon: String(location.lon),
@@ -76,6 +77,7 @@ function LocationSettings({ account }: { account: Account }) {
             try {
               await save({
                 locations: locations.map((location) => ({
+                  ...(location.id ? { id: location.id } : {}),
                   name: location.name,
                   lat: Number(location.lat),
                   lon: Number(location.lon),

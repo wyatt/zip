@@ -39,6 +39,7 @@ export type AircraftSample = {
 export const TELEMETRY_STALE_MS = 2000;
 export const SESSION_LEASE_MS = 10000;
 export const COMMAND_TTL_MS = 8000;
+export const WAITING_FLEET_RADIUS_M = 8000;
 export const JOB_LABELS: Record<JobKind, string> = { flight_check: "Flight check", search: "Search & Rescue", inspection: "Inspection", deliver: "Delivery" };
 export const REQUEST_MODES = [
   { kind: "deliver" as const, label: "Delivery", summary: "Carry a payload to a drop-off.", frame: 0 },

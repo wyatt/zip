@@ -138,10 +138,9 @@
   aspect-ratio: 1;
   width: 100%;
   background-color: #fff;
-  background-image:
-    linear-gradient(rgba(255, 255, 255, 0.58), rgba(255, 255, 255, 0.58)),
-    url("/drones/hangar-noise.png?v=5");
+  background-image: var(--dither);
   background-size: 72px 72px;
+  background-blend-mode: multiply;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
   display: grid;

@@ -4,6 +4,8 @@ import { internal } from "./_generated/api";
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireAgentSession, requireCredential } from "./access";
+import { physicalIntegrationAllowed } from "../lib/roles";
+import { profileLaunchSites, resolvedVehicleHome } from "./fleet";
 import { aircraftSample, capability, controlOwner, environment } from "./operationsSchema";
 import { preflightProblems, SESSION_LEASE_MS, stepSatisfied, validateSample } from "../lib/operations";
 
@@ -11,7 +13,9 @@ const sessionArgs = { token: v.string(), sessionId: v.id("agentSessions") };
 export const fleet = query({ args: { token: v.string() }, handler: async (ctx, { token }) => {
   const { operatorId } = await requireCredential(ctx, token);
   const vehicles = await ctx.db.query("vehicles").withIndex("by_operator", q => q.eq("operatorId", operatorId)).take(100);
-  return vehicles.map(vehicle => ({ vehicleId: vehicle._id, name: vehicle.name, hardwareId: vehicle.hardwareId, environment: vehicle.environment, home: vehicle.home, capabilities: vehicle.capabilities }));
+  const profile = await ctx.db.query("operatorProfiles").withIndex("by_user", q => q.eq("userId", operatorId)).unique();
+  const sites = profileLaunchSites(profile);
+  return vehicles.map(vehicle => ({ vehicleId: vehicle._id, name: vehicle.name, hardwareId: vehicle.hardwareId, environment: vehicle.environment, home: resolvedVehicleHome(sites, vehicle), capabilities: vehicle.capabilities }));
 } });
 export const pulse = mutation({ args: { token: v.string() }, handler: async (ctx, { token }) => {
   const { credential } = await requireCredential(ctx, token);
@@ -103,7 +107,8 @@ export const claim = mutation({ args: { ...sessionArgs, commandId: v.id("control
     await ctx.db.patch(command._id, { status: "expired", reason: "Expired or superseded before execution." });
     return null;
   }
-  if (vehicle.environment === "aircraft" && !vehicle.integrationApproved) throw new Error("Physical control is disabled.");
+  const operator = await ctx.db.query("members").withIndex("by_user", q => q.eq("userId", vehicle.operatorId)).unique();
+  if (vehicle.environment === "aircraft" && !physicalIntegrationAllowed(vehicle.integrationApproved, operator?.role)) throw new Error("Physical control is disabled.");
   if (command.kind === "start") {
     const telemetry = await ctx.db.query("vehicleTelemetry").withIndex("by_vehicle", q => q.eq("vehicleId", vehicle._id)).unique();
     const problems = preflightProblems(telemetry?.sessionId === args.sessionId ? telemetry.sample : null, operation.plan, Date.now());

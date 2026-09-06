@@ -10,22 +10,51 @@
 }
 .operator-retro.request-page .page-heading {
   margin-bottom: 12px;
-}
-.operator-retro.request-page .heading-actions .primary,
-.operator-retro.request-page .heading-actions .text-button {
-  min-width: 0;
-  height: 48px;
-  padding: 0 16px;
-  display: inline-flex;
+  justify-content: flex-start;
   align-items: center;
-  justify-content: center;
 }
-.operator-retro.request-page .heading-actions .text-button {
-  border: 3px solid var(--ink);
-  background: white;
+.operator-retro.request-page .page-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.operator-retro.request-page .page-title h1 {
+  min-width: 0;
+}
+.operator-retro.request-page .back-icon,
+.operator-retro.request-page .cancel-request {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
   color: var(--ink);
-  text-decoration: none;
-  font-weight: 700;
+  line-height: 0;
+  flex-shrink: 0;
+}
+.operator-retro.request-page .back-icon svg,
+.operator-retro.request-page .cancel-request svg {
+  display: block;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+.operator-retro.request-page .cancel-request {
+  margin-top: auto;
+  align-self: flex-end;
+  position: sticky;
+  bottom: 4px;
+}
+.operator-retro.request-page .cancel-request:hover:not(:disabled) {
+  color: #9b3327;
+}
+.operator-split.overlay .cancel-request {
+  position: static;
+  margin-top: 8px;
+  align-self: flex-end;
 }
 .operator-retro.request-page .panel > h2 {
   margin-bottom: 8px;
@@ -52,21 +81,83 @@
 }
 .mission-strip {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
 }
 .mission-card {
   border: 3px solid var(--ink);
   background: white;
-  padding: 16px 14px;
+  padding: 0;
   text-align: left;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
   width: 100%;
+  overflow: hidden;
 }
 .mission-card:hover {
   background: var(--canvas);
+}
+.mission-copy {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  padding: 12px 12px 12px 14px;
+}
+.mission-card .job-person,
+.mission-card .job-description {
+  padding: 0;
+}
+.mission-art {
+  grid-column: 2;
+  grid-row: 1 / -1;
+  position: relative;
+  align-self: stretch;
+  height: 100%;
+  aspect-ratio: 1 / 1;
+  background: #fff;
+  overflow: hidden;
+}
+.mission-art img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+.mission-art.silhouette img {
+  filter: brightness(0);
+  opacity: 0.92;
+}
+.mission-card .status {
+  grid-column: 1;
+  grid-row: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: #000;
+  color: #fff;
+  padding: 9px 14px;
+  text-align: center;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  animation: mission-status-pulse 1.6s ease-in-out infinite;
+}
+@keyframes mission-status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
 }
 .mode-grid {
   display: grid;
@@ -143,9 +234,19 @@
   .mode-grid {
     grid-template-columns: 1fr;
   }
+  .mission-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 @media (max-width: 720px) {
   .operator-retro.request-page.request-catalog {
     padding: 26px 18px 40px;
+  }
+  .operator-retro.request-page .page-heading {
+    flex-direction: row;
+    align-items: center;
+  }
+  .mission-strip {
+    grid-template-columns: 1fr;
   }
 }

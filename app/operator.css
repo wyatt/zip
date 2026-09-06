@@ -52,7 +52,10 @@
   background: #f3efe0;
 }
 .operator-map .map-wrap,
-.operator-map .map-loading {
+.operator-map .map-loading,
+.operator-map .waiting-map,
+.operator-map .waiting-map .map-wrap,
+.operator-map .waiting-map .map-loading {
   height: 100%;
   max-height: none;
   border: 0;
@@ -73,6 +76,37 @@
   flex-direction: column;
   gap: 18px;
 }
+.operator-split.overlay {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  position: relative;
+}
+.operator-split.overlay .operator-map,
+.operator-split.overlay .operator-board {
+  grid-column: 1;
+  grid-row: 1;
+}
+.operator-split.overlay .operator-map {
+  z-index: 0;
+  isolation: isolate;
+}
+.operator-split.overlay .operator-board {
+  z-index: 2;
+  position: relative;
+  align-self: start;
+  justify-self: start;
+  width: min(420px, calc(100% - 48px));
+  max-height: calc(100% - 48px);
+  margin: 24px;
+  padding: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background: transparent;
+}
+.operator-split.overlay .operator-board > * {
+  pointer-events: auto;
+}
 .operator-board > [role="tabpanel"] {
   display: flex;
   flex-direction: column;
@@ -81,6 +115,54 @@
 .operator-retro .page-heading {
   align-items: center;
   margin-bottom: 6px;
+}
+.operator-retro .page-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.operator-retro .page-title h1 {
+  min-width: 0;
+  font-size: 22px;
+}
+.operator-retro .back-icon {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  line-height: 0;
+  flex-shrink: 0;
+}
+.operator-retro .back-icon svg {
+  display: block;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+.job-float {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-height: 100%;
+  overflow: auto;
+  background: white;
+  border: 3px solid var(--ink);
+  padding: 16px 16px 20px;
+  pointer-events: auto;
+}
+.operator-split.overlay .job-float .panel {
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+.operator-split.overlay .job-float .page-heading {
+  margin: 0 0 4px;
 }
 .operator-retro .operator-flight-tabs {
   display: flex;
@@ -157,9 +239,11 @@
   font-weight: 700;
 }
 .operator-retro .job-list {
+  display: flex;
+  flex-direction: column;
   max-height: none;
   margin: 0;
-  gap: 8px;
+  gap: 12px;
 }
 .operator-retro .job-row {
   border: 2px solid var(--ink);
@@ -202,6 +286,33 @@
 .operator-retro .mode-choice.checked {
   background: var(--canvas);
 }
+.operator-retro .flight-control {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  min-width: 0;
+}
+.operator-retro .flight-control legend {
+  grid-column: 1 / -1;
+  padding-top: 12px;
+  padding-bottom: 6px;
+}
+.operator-retro .flight-control .mode-choice {
+  margin: 0;
+  min-width: 0;
+  padding-top: 18px;
+}
+.operator-retro .beta-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 6px;
+  border: 2px solid var(--ink);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  vertical-align: 1px;
+}
 .operator-retro .telemetry {
   border-top: 3px solid var(--ink);
   border-bottom: 3px solid var(--ink);
@@ -238,6 +349,10 @@
     grid-template-columns: 1fr;
     grid-template-rows: minmax(0, var(--split, 50%)) 4px minmax(0, 1fr);
   }
+  .operator-split.overlay {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
   .operator-gutter,
   .operator-split.dragging {
     cursor: row-resize;
@@ -252,5 +367,10 @@
   }
   .operator-board {
     padding: 20px 16px 32px;
+  }
+  .operator-split.overlay .operator-board {
+    width: calc(100% - 32px);
+    max-height: min(58%, calc(100% - 32px));
+    margin: 16px;
   }
 }

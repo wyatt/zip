@@ -3,20 +3,48 @@ import { internalMutation, mutation, query } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { requireOperator, requireAdmin, requireOperatorAccount } from "./access";
-import { environment, capability, geo } from "./operationsSchema";
+import { environment, capability } from "./operationsSchema";
 import { assertGeo } from "../lib/operations";
+import { isDemoRole } from "../lib/roles";
+import { assignLaunchSiteIds, resolveLaunchSite, type LaunchSite, type LaunchSiteInput } from "../lib/launch-sites";
+import type { Doc } from "./_generated/dataModel";
 
 async function operatorVehicles(ctx: MutationCtx, operatorId: Id<"users">) {
   return ctx.db.query("vehicles").withIndex("by_operator", q => q.eq("operatorId", operatorId)).take(100);
 }
 
+export function profileLaunchSites(profile: { presetLocations?: LaunchSiteInput[] } | null) {
+  return assignLaunchSiteIds(profile?.presetLocations ?? []);
+}
+
+export function resolvedVehicleHome(sites: LaunchSite[], vehicle: Pick<Doc<"vehicles">, "home" | "launchSiteId" | "launchSiteName">) {
+  const site = resolveLaunchSite(sites, vehicle) ?? sites.find(entry => entry.name.toLowerCase() === "home") ?? sites[0];
+  return site ? { lat: site.lat, lon: site.lon } : vehicle.home;
+}
+
+export async function syncFleetLaunchSites(ctx: MutationCtx, operatorId: Id<"users">, sites: LaunchSite[]) {
+  for (const vehicle of await operatorVehicles(ctx, operatorId)) {
+    const site = resolveLaunchSite(sites, vehicle) ?? sites.find(entry => entry.name.toLowerCase() === "home") ?? sites[0];
+    if (!site) continue;
+    await ctx.db.patch(vehicle._id, { home: { lat: site.lat, lon: site.lon }, launchSiteId: site.id, launchSiteName: site.name });
+  }
+}
+
+async function approveDemoFleet(ctx: MutationCtx, operatorId: Id<"users">, role: string) {
+  if (!isDemoRole(role)) return;
+  for (const vehicle of await operatorVehicles(ctx, operatorId)) {
+    if (!vehicle.integrationApproved) await ctx.db.patch(vehicle._id, { integrationApproved: true });
+  }
+}
+
 export const mine = query({ args: {}, handler: async ctx => {
   const { member } = await requireOperator(ctx);
   const vehicles = await ctx.db.query("vehicles").withIndex("by_operator", q => q.eq("operatorId", member.userId)).take(100);
+  const sites = profileLaunchSites(await ctx.db.query("operatorProfiles").withIndex("by_user", q => q.eq("userId", member.userId)).unique());
   return Promise.all(vehicles.map(async vehicle => {
     const telemetry = await ctx.db.query("vehicleTelemetry").withIndex("by_vehicle", q => q.eq("vehicleId", vehicle._id)).unique();
     const session = vehicle.activeSessionId ? await ctx.db.get(vehicle.activeSessionId) : null;
-    return { ...vehicle, telemetry, session: session ? { leaseUntil: session.leaseUntil, lastSeenAt: session.lastSeenAt, retired: session.retired } : null };
+    return { ...vehicle, home: resolvedVehicleHome(sites, vehicle), telemetry, session: session ? { leaseUntil: session.leaseUntil, lastSeenAt: session.lastSeenAt, retired: session.retired } : null };
   }));
 } });
 export const agentStatus = query({ args: {}, handler: async ctx => {
@@ -31,18 +59,20 @@ export const agentStatus = query({ args: {}, handler: async ctx => {
   }
   return { issued: !!active, expiresAt: active?.expiresAt ?? null, lastSeenAt: active?.lastSeenAt ?? null, heartbeats };
 } });
-export const register = mutation({ args: { name: v.string(), hardwareId: v.string(), environment, capabilities: v.array(capability), maxPayloadKg: v.number(), cameraMp: v.optional(v.number()), home: geo, maxRadiusM: v.number(), serviceRadiusM: v.optional(v.number()), model: v.optional(v.string()) }, handler: async (ctx, args) => {
+export const register = mutation({ args: { name: v.string(), hardwareId: v.string(), environment, capabilities: v.array(capability), maxPayloadKg: v.number(), cameraMp: v.optional(v.number()), launchSiteId: v.optional(v.string()), launchSiteName: v.optional(v.string()), maxRadiusM: v.number(), serviceRadiusM: v.optional(v.number()), model: v.optional(v.string()) }, handler: async (ctx, args) => {
   const member = await requireOperatorAccount(ctx);
   const profile = await ctx.db.query("operatorProfiles").withIndex("by_user", q => q.eq("userId", member.userId)).unique();
   if (profile && !profile.approved) throw new Error("Operator access is suspended. Contact support.");
-  assertGeo(args.home);
   if (!args.name.trim() || args.name.length > 80 || !/^[a-zA-Z0-9_-]{3,80}$/.test(args.hardwareId)) throw new Error("Enter an aircraft name and a valid hardware identity.");
   if (!Number.isFinite(args.maxPayloadKg) || args.maxPayloadKg < 0 || args.maxPayloadKg > 25 || !Number.isFinite(args.maxRadiusM) || args.maxRadiusM < 5 || args.maxRadiusM > 100000) throw new Error("Invalid aircraft limits.");
   const existing = await ctx.db.query("vehicles").withIndex("by_operator", q => q.eq("operatorId", member.userId)).take(100);
   if (existing.length >= 100 || existing.some(vehicle => vehicle.hardwareId === args.hardwareId)) throw new Error("Aircraft identity already registered or fleet limit reached.");
   if (!profile || !profile.presetLocations?.length) throw new Error("Save launch sites in account settings before registering an aircraft.");
-  const launch = profile.presetLocations.find(site => Math.abs(site.lat - args.home.lat) < 1e-7 && Math.abs(site.lon - args.home.lon) < 1e-7);
+  const sites = profileLaunchSites(profile);
+  const launch = resolveLaunchSite(sites, args);
   if (!launch) throw new Error("Choose a saved launch site from account settings.");
+  const home = { lat: launch.lat, lon: launch.lon };
+  assertGeo(home);
   const serviceRadiusM = args.serviceRadiusM ?? Math.max(args.maxRadiusM, 100);
   if (!Number.isFinite(serviceRadiusM) || serviceRadiusM < 100 || serviceRadiusM > 100000) throw new Error("Max range must be 100–100,000 meters.");
   if (args.model && args.model.trim().length > 100) throw new Error("Model must be at most 100 characters.");
@@ -51,9 +81,10 @@ export const register = mutation({ args: { name: v.string(), hardwareId: v.strin
   if (args.capabilities.includes("camera")) {
     if (!Number.isFinite(args.cameraMp) || (args.cameraMp ?? 0) < 0.1 || (args.cameraMp ?? 0) > 200) throw new Error("Enter camera resolution in megapixels.");
   } else if (args.cameraMp) throw new Error("Camera resolution requires a camera.");
-  const { serviceRadiusM: _serviceRadiusM, model, cameraMp, ...vehicle } = args;
-  await ctx.db.patch(profile._id, { serviceRadiusM });
-  return ctx.db.insert("vehicles", { ...vehicle, ...(model?.trim() ? { model: model.trim() } : {}), ...(args.capabilities.includes("camera") ? { cameraMp } : {}), name: args.name.trim(), capabilities: [...new Set(args.capabilities)], operatorId: member.userId, available: true, integrationApproved: args.environment === "simulated" });
+  const { serviceRadiusM: _serviceRadiusM, model, cameraMp, launchSiteId: _launchSiteId, launchSiteName: _launchSiteName, ...vehicle } = args;
+  await ctx.db.patch(profile._id, { serviceRadiusM, presetLocations: sites });
+  await approveDemoFleet(ctx, member.userId, member.role);
+  return ctx.db.insert("vehicles", { ...vehicle, home, launchSiteId: launch.id, launchSiteName: launch.name, ...(model?.trim() ? { model: model.trim() } : {}), ...(args.capabilities.includes("camera") ? { cameraMp } : {}), name: args.name.trim(), capabilities: [...new Set(args.capabilities)], operatorId: member.userId, available: true, integrationApproved: args.environment === "simulated" || isDemoRole(member.role) });
 } });
 export const remove = mutation({ args: { vehicleId: v.id("vehicles") }, handler: async (ctx, { vehicleId }) => {
   const { member } = await requireOperator(ctx);
