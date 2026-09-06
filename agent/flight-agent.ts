@@ -226,7 +226,9 @@ export async function startFlightAgent(url: string, token: string) {
   }); }, 2000);
   await sync(await client.query(api.agentLink.fleet, { token }));
   const gateway = await startControlGateway({
-    port: Number(process.env.IRIS_CONTROL_PORT ?? "8765"), allowedOrigin: process.env.IRIS_ALLOWED_ORIGIN ?? "http://127.0.0.1:3000",
+    port: Number(process.env.IRIS_CONTROL_PORT ?? process.env.PORT ?? "8765"),
+    host: process.env.IRIS_CONTROL_BIND ?? (process.env.PORT ? "0.0.0.0" : "127.0.0.1"),
+    allowedOrigin: process.env.IRIS_ALLOWED_ORIGIN ?? "http://127.0.0.1:3000",
     redeem: ticket => client.mutation(api.manualControl.redeem, { token, ticket }),
     adapterFor: vehicleId => vehicles.get(vehicleId)?.adapter,
     owns: grant => vehicles.get(grant.vehicleId)?.owns(grant) ?? false,

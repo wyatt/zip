@@ -11,6 +11,7 @@ export type ControlGrant = { operationId: string; vehicleId: string; generation:
 type Options = {
   adapterFor: (vehicleId: string) => DroneAdapter | undefined;
   port: number;
+  host: string;
   allowedOrigin: string;
   redeem: (ticket: string) => Promise<ControlGrant>;
   owns: (grant: ControlGrant) => boolean;
@@ -28,7 +29,15 @@ export async function startControlGateway(options: Options) {
     if (!found) throw new Error("Aircraft is not connected to this agent.");
     return found;
   };
-  server.on("request", (_, response) => { response.writeHead(404); response.end(); });
+  server.on("request", (request, response) => {
+    if (request.method === "GET" && request.url === "/health") {
+      response.writeHead(200, { "content-type": "text/plain" });
+      response.end("ok");
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
   server.on("upgrade", (request, socket, head) => {
     if (request.url !== "/control" || request.headers.origin !== options.allowedOrigin) { socket.destroy(); return; }
     wss.handleUpgrade(request, socket, head, ws => wss.emit("connection", ws, request));
@@ -146,6 +155,6 @@ export async function startControlGateway(options: Options) {
       });
     });
   });
-  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(options.port, "127.0.0.1", () => { server.off("error", reject); resolve(); }); });
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(options.port, options.host, () => { server.off("error", reject); resolve(); }); });
   return { port: (server.address() as import("node:net").AddressInfo).port, async close() { for (const ws of wss.clients) ws.close(1001, "Agent shutting down"); await new Promise<void>(resolve => wss.close(() => resolve())); await new Promise<void>(resolve => server.close(() => resolve())); } };
 }
