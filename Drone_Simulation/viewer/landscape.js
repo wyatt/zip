@@ -72,7 +72,9 @@ export async function createLandscape(container, { dataUrl, onChange = () => {},
   Object.assign(sun.shadow.camera, {left:-span*.85,right:span*.85,top:span*.85,bottom:-span*.85,near:1,far:span*4});
   sun.shadow.bias = -.00025; sun.shadow.normalBias = .25;
   scene.add(sun);
-  const baseline = Math.floor(meta.zMin)-3;
+  // Every column rises from one regional datum. Using the smaller crop's
+  // higher minimum flattened all regional elevations below it at zero.
+  const baseline = Math.floor(Math.min(meta.zMin,regionMeta?.zMin??meta.zMin))-3;
   const base = new THREE.Mesh(new THREE.BoxGeometry(cols*res+2, 3, rows*res+2), createBaseMaterial());
   base.position.y = -1.51; base.receiveShadow = true; scene.add(base);
   const roofDisplay=repairRoofDisplay(heights,codes,flags,rows,cols,res);

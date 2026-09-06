@@ -114,18 +114,25 @@ export async function createRegionalTerrain(scene,{url,meta,baseline,requestRend
   function report(){onStatus(failed.size?'Some detail tiles failed; overview remains available':`${resident.size} detail tiles loaded${activeLoads?' · Loading detail…':''}`);}
   function pump(){
     if(disposed)return;
-    for(const [id,wanted] of desired){
+    // Establish complete 5 m coverage before spending time on 1 m upgrades.
+    // This prevents coarse overview patches from persisting between detailed tiles.
+    const work=[...desired].sort(([a],[b])=>Number(resident.has(a))-Number(resident.has(b)));
+    for(const [id,wanted] of work){
       if(activeLoads>=2)break;
-      if(resident.get(id)?.level===wanted.level||pending.has(id)||failed.has(`${id}/${wanted.level}`))continue;
+      if(resident.get(id)?.level===wanted.level||pending.has(id))continue;
       const cached=cache.get(id);
-      if(cached?.level===wanted.level){
+      if(cached?.level===wanted.level||(wanted.level===1&&cached?.level===5&&!resident.has(id))){
         const previous=resident.get(id);if(previous&&previous!==cached)detach(previous);
-        resident.set(id,cached);group.add(cached.mesh);cache.delete(id);cache.set(id,cached);updateMask();requestRender();continue;
+        resident.set(id,cached);group.add(cached.mesh);cache.delete(id);cache.set(id,cached);updateMask();requestRender();
+        if(cached.level===wanted.level)continue;
+        queueMicrotask(pump);continue;
       }
+      const level=wanted.level===1&&!resident.has(id)?5:wanted.level;
+      if(failed.has(`${id}/${level}`))continue;
       const controller=new AbortController();pending.set(id,controller);activeLoads++;
-      load(wanted.tile,wanted.level,false,controller.signal).then(result=>{
+      load(wanted.tile,level,false,controller.signal).then(result=>{
         const current=desired.get(id);
-        if(disposed||current?.level!==result.level){free(result);return;}
+        if(disposed||!current||(current.level!==result.level&&!(current.level===1&&result.level===5))){free(result);return;}
         const previous=resident.get(id);if(previous&&previous!==result)detach(previous);
         resident.set(id,result);group.add(result.mesh);cacheTile(id,result);updateMask();requestRender();
       }).catch(error=>{
@@ -147,7 +154,10 @@ export async function createRegionalTerrain(scene,{url,meta,baseline,requestRend
       onLocalDetail(showLocal);requestRender();
     }
     const wanted=selectRegionalTiles(meta.tiles,{x:target.x,z:target.z,worldPerPixel,
-      visible:tile=>intersectsFocus(tile)&&frustum.intersectsBox(new THREE.Box3(new THREE.Vector3(tile.west,meta.zMin-baseline,-tile.north),new THREE.Vector3(tile.west+tile.size,meta.zMax-baseline,-tile.north+tile.size)))});
+      visible:tile=>intersectsFocus(tile)&&(!!focus||frustum.intersectsBox(new THREE.Box3(
+        new THREE.Vector3(tile.west,meta.zMin-baseline,-tile.north),
+        new THREE.Vector3(tile.west+tile.size,meta.zMax-baseline,-tile.north+tile.size),
+      )))},focus?meta.tiles.length:20);
     desired=new Map(wanted.map(value=>[value.tile.id,value]));
     for(const [id,entry] of resident)if(!desired.has(id)){detach(entry);resident.delete(id);}
     for(const [id,controller] of pending)if(!desired.has(id))controller.abort();
