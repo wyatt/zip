@@ -11,7 +11,7 @@ export type ControlGrant = { operationId: string; vehicleId: string; generation:
 type Options = {
   adapterFor: (vehicleId: string) => DroneAdapter | undefined;
   port: number;
-  host: string;
+  host?: string;
   allowedOrigin: string;
   redeem: (ticket: string) => Promise<ControlGrant>;
   owns: (grant: ControlGrant) => boolean;
@@ -155,6 +155,6 @@ export async function startControlGateway(options: Options) {
       });
     });
   });
-  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(options.port, options.host, () => { server.off("error", reject); resolve(); }); });
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(options.port, options.host ?? "127.0.0.1", () => { server.off("error", reject); resolve(); }); });
   return { port: (server.address() as import("node:net").AddressInfo).port, async close() { for (const ws of wss.clients) ws.close(1001, "Agent shutting down"); await new Promise<void>(resolve => wss.close(() => resolve())); await new Promise<void>(resolve => server.close(() => resolve())); } };
 }
