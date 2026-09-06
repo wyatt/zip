@@ -8,10 +8,15 @@ import { buildingWallStyles } from './wall-style.js';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createPhotoMaterial, createBaseMaterial, coverStyle } from './photo-material.js';
+import { loadRegionManifest, createRegionalTerrain } from './regional-terrain.js';
+import {planRegionalMissionInWorker} from './regional-planner-client.js';
+import {RegionalMissionSimulation} from './regional-mission-simulation.js';
+import {createRegionalReconstruction} from './regional-reconstruction.js';
+import {createMissionEditorView} from './mission-editor-view.js';
 import aerialUrl from './assets/ithaca-2023.jpg';
 
 /** Standalone, framework-free viewer. Rendering is on demand; dispose on unmount. */
-export async function createLandscape(container, { dataUrl, onChange = () => {}, onProject = () => {}, onHover = () => {}, onMapStatus = () => {}, onMission = () => {} } = {}) {
+export async function createLandscape(container, { dataUrl, onChange = () => {}, onProject = () => {}, onHover = () => {}, onMapClick = () => {}, onMapStatus = () => {}, onPlanning = () => {}, onMissionEvent = () => {}, onMission = () => {} } = {}) {
   const read = async (name, type) => {
     const response = await fetch(`${dataUrl}${name}`);
     if (!response.ok) throw new Error(`${name}: HTTP ${response.status}`);
@@ -20,6 +25,11 @@ export async function createLandscape(container, { dataUrl, onChange = () => {},
   const [meta, zBuffer, cBuffer, fBuffer] = await Promise.all([
     read('manifest.json','json'), read('elevation.f32'), read('classes.u8'), read('flags.u8'),
   ]);
+  const regionUrl=`${dataUrl.replace(/data\/?$/, '')}region/`;
+  let regionMeta=null;
+  try { regionMeta=await loadRegionManifest(regionUrl); }
+  catch { /* The local 512 m package remains usable before regional acquisition. */ }
+  meta.regionalExtent=regionMeta?.size??null;
   const heights = new Float32Array(zBuffer), codes = new Uint8Array(cBuffer), flags = new Uint8Array(fBuffer);
   const {rows, cols, resolution: res} = meta, count = rows * cols;
   if (heights.length !== count || codes.length !== count || flags.length !== count || count > 512*512) throw new Error('Invalid or oversized aligned surface buffers');
@@ -46,7 +56,8 @@ export async function createLandscape(container, { dataUrl, onChange = () => {},
   container.append(renderer.domElement);
   const scene = new THREE.Scene();
   const span = Math.max(rows,cols)*res;
-  const camera = new THREE.OrthographicCamera(-span, span, span, -span, .1, 3000);
+  const worldSpan=regionMeta?.size??span;
+  const camera = new THREE.OrthographicCamera(-worldSpan, worldSpan, worldSpan, -worldSpan, .1, Math.max(3000,worldSpan*3));
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = false;
   controls.minZoom = .4; controls.maxZoom = 12;
@@ -85,6 +96,13 @@ export async function createLandscape(container, { dataUrl, onChange = () => {},
   });
   terrain.castShadow = true; terrain.receiveShadow = true;
   terrain.computeBoundingSphere(); scene.add(terrain);
+  let regional=null,missionBounds=null;
+  if(regionMeta){
+    terrain.visible=false;base.visible=false;
+    try { regional=await createRegionalTerrain(scene,{url:regionUrl,meta:regionMeta,baseline,requestRender,onStatus:onMapStatus,
+      onLocalDetail:visible=>{const show=visible&&!(viewMode==='orbit'&&missionBounds);terrain.visible=show;base.visible=show;requestRender();}}); }
+    catch(error){terrain.visible=true;base.visible=true;onMapStatus(`Regional map unavailable · ${error.message}`);}
+  }
   // A sparse ground grid provides scale without implying additional observations.
   const grid = new THREE.GridHelper(span+100, Math.round((span+100)/25),0x3a525d,0x263e49);
   grid.position.y = -3.1; scene.add(grid);
@@ -99,7 +117,9 @@ export async function createLandscape(container, { dataUrl, onChange = () => {},
   let cells = [...initialCells], selection = null, disposed = false, scheduled = 0, transition = null, viewMode = 'top';
   const inspectionOverlay=createInspectionOverlay(scene,meta,heights,flags,baseline,meta.zMax-baseline+3);
   const missionView=createMissionView(scene,baseline);
-  let mission=null,missionLast=null,reconstruction=null;
+  const editorView=createMissionEditorView(scene,baseline,meta.zMax);
+  inspectionOverlay.setVisible(false);
+  let mission=null,missionLast=null,reconstruction=null,missionPlan=null,missionDraft={};
   // One source image read, reused for each simulated capture. No new imagery fetch.
   const colorCanvas=document.createElement('canvas');colorCanvas.width=cols;colorCanvas.height=rows;
   const colorContext=colorCanvas.getContext('2d');colorContext.drawImage(aerial.image,0,0,cols,rows);
@@ -159,6 +179,7 @@ export async function createLandscape(container, { dataUrl, onChange = () => {},
       if(mission.active&&!document.hidden)requestRender();
     }
     renderer.render(scene,camera);
+    if(regional){const rect=container.getBoundingClientRect();regional.update(camera,rect.width,controls.target);}
     const rect=container.getBoundingClientRect();
     onProject(labelPositions.map(position=>{const p=position.clone().project(camera);return {x:(p.x+1)*rect.width/2,y:(1-p.y)*rect.height/2,visible:Math.abs(p.x)<1&&Math.abs(p.y)<1&&p.z>-1&&p.z<1};}));
   }
@@ -171,26 +192,33 @@ export async function createLandscape(container, { dataUrl, onChange = () => {},
     const aspect=width/height;
     // A bounding sphere fits every model corner in portrait and landscape,
     // even while the camera rotates. Zoom 1 is the full-domain view.
-    const radius=Math.hypot(cols*res/2,rows*res/2,(meta.zMax-baseline+3)/2);
+    const radius=Math.max(worldSpan/2,Math.hypot(cols*res/2,rows*res/2,(meta.zMax-baseline+3)/2));
     const half=radius*1.28;
     camera.left=-half*Math.max(1,aspect);camera.right=-camera.left;
     camera.top=half*Math.max(1,1/aspect);camera.bottom=-camera.top;
-    camera.updateProjectionMatrix();renderer.setSize(width,height);requestRender();
+    camera.updateProjectionMatrix();renderer.setSize(width,height);editorView.setResolution(width,height);requestRender();
   }
   const observer=new ResizeObserver(resize);observer.observe(container);
   function setView(name, { animate = true, reset = false } = {}) {
     const map = name === 'top';
     viewMode=name;
+    const missionFocus=!map&&missionBounds?missionBounds:null;regional?.setFocus(missionFocus);
+    if(missionFocus){terrain.visible=false;base.visible=false;}grid.visible=compass.visible=north.visible=!missionFocus;
     controls.enableRotate = !map;
     controls.mouseButtons.LEFT = map ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE;
     controls.touches.ONE = map ? THREE.TOUCH.PAN : THREE.TOUCH.ROTATE;
     controls.touches.TWO = THREE.TOUCH.DOLLY_PAN;
     const from = new THREE.Spherical().setFromVector3(camera.position.clone().sub(controls.target));
-    const to = new THREE.Spherical().setFromVector3(map ? new THREE.Vector3(0,400,.001) : new THREE.Vector3(260,245,300));
+    const to = new THREE.Spherical().setFromVector3(map
+      ? new THREE.Vector3(0,Math.max(400,worldSpan*1.4),.001)
+      : new THREE.Vector3(worldSpan*.52,worldSpan*.46,worldSpan*.60));
     // Use the shortest azimuth arc, including after freely orbiting the model.
     to.theta = from.theta + Math.atan2(Math.sin(to.theta-from.theta),Math.cos(to.theta-from.theta));
-    const toTarget = reset ? new THREE.Vector3(0,(meta.zMax-baseline)/2,0) : controls.target.clone();
-    const toZoom = reset ? 1 : camera.zoom;
+    const fullMap=map&&missionBounds;
+    const toTarget = missionFocus?new THREE.Vector3((missionFocus.west+missionFocus.east)/2,(meta.zMax-baseline)/2,-(missionFocus.south+missionFocus.north)/2)
+      :(reset||fullMap)?new THREE.Vector3(0,(meta.zMax-baseline)/2,0):controls.target.clone();
+    const focusWidth=missionFocus?Math.max(150,missionFocus.east-missionFocus.west):0,focusHeight=missionFocus?Math.max(150,missionFocus.north-missionFocus.south):0;
+    const toZoom = missionFocus?Math.min(controls.maxZoom,Math.max(controls.minZoom,Math.min((camera.right-camera.left)/(focusWidth*1.45),(camera.top-camera.bottom)/(focusHeight*1.45)))):(reset||fullMap)?1:camera.zoom;
     if (animate && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
       transition = {from,to,fromTarget:controls.target.clone(),toTarget,
         fromZoom:camera.zoom,toZoom,started:performance.now(),duration:900};
@@ -203,19 +231,40 @@ export async function createLandscape(container, { dataUrl, onChange = () => {},
     }
     requestRender();
   }
-  function hit(event){const r=renderer.domElement.getBoundingClientRect();pointer.set((event.clientX-r.left)/r.width*2-1,-(event.clientY-r.top)/r.height*2+1);raycaster.setFromCamera(pointer,camera);const intersection=raycaster.intersectObject(terrain,false)[0];return intersection ? validCells[intersection.instanceId] : null;}
+  function setRay(event){const r=renderer.domElement.getBoundingClientRect();pointer.set((event.clientX-r.left)/r.width*2-1,-(event.clientY-r.top)/r.height*2+1);raycaster.setFromCamera(pointer,camera);}
+  function hit(event){setRay(event);const intersection=raycaster.intersectObject(terrain,false)[0];return intersection ? validCells[intersection.instanceId] : null;}
+  function hitPoint(event){
+    setRay(event);const remote=regional?.pick(raycaster);if(remote)return [remote.x,remote.y,remote.elevation];
+    const intersection=raycaster.intersectObject(terrain,false)[0];if(!intersection)return null;const d=describe(validCells[intersection.instanceId]);return [d.x,d.y,d.elevation];
+  }
   let down=null,lastHover=0;
   function pointerDown(event){down={x:event.clientX,y:event.clientY,button:event.button};}
-  function pointerUp(event){if(!down||down.button!==0||Math.hypot(event.clientX-down.x,event.clientY-down.y)>5)return;down=null;if(mission||selection===null||transition)return;const cell=hit(event);if(cell===null||!(flags[cell]&1))return;cells[selection]=cell;selection=null;container.style.cursor='';updateMarkers();}
+  function pointerUp(event){
+    if(!down||down.button!==0||Math.hypot(event.clientX-down.x,event.clientY-down.y)>5)return;down=null;if(mission||transition)return;
+    if(selection!==null){const cell=hit(event);if(cell===null||!(flags[cell]&1))return;cells[selection]=cell;selection=null;container.style.cursor='';updateMarkers();return;}
+    const point=hitPoint(event);if(point)onMapClick(point);
+  }
   function pointerMove(event){if(event.buttons||performance.now()-lastHover<100)return;lastHover=performance.now();const cell=hit(event);onHover(cell===null?null:describe(cell));}
   function leave(){onHover(null);}
   function key(event){if(event.key==='Escape'){selection=null;container.style.cursor='';updateMarkers();}}
   renderer.domElement.addEventListener('pointerdown',pointerDown);renderer.domElement.addEventListener('pointerup',pointerUp);renderer.domElement.addEventListener('pointermove',pointerMove);renderer.domElement.addEventListener('pointerleave',leave);window.addEventListener('keydown',key);
   controls.target.set(0,(meta.zMax-baseline)/2,0);
-  camera.position.set(0,400,.001);camera.zoom=1;
+  camera.position.set(0,Math.max(400,worldSpan*1.4),.001);camera.zoom=1;
   resize();setView('top', {animate:false});updateMarkers();
   return {
     setView,
+    setMissionDraft(value){missionDraft=value??{};editorView.set(missionDraft);requestRender();},
+    async planRegionalMission(config){
+      if(!regional||!regionMeta)throw new Error('Regional terrain is unavailable.');
+      if(mission)throw new Error('Restart the current mission before planning another.');
+      onPlanning({stage:'coarse',completed:0,total:1});
+      const plan=await planRegionalMissionInWorker(regionUrl,config,onPlanning);
+      reconstruction=await createRegionalReconstruction(regionUrl,regionMeta,plan,onPlanning);
+      missionPlan=plan;missionBounds=plan.renderBounds;
+      const relayEvent=event=>{if(event.type==='found'){missionDraft={...missionDraft,target:plan.target,targetVisible:true};editorView.set(missionDraft);}onMissionEvent(event);};
+      mission=new RegionalMissionSimulation(plan,{onCapture:event=>reconstruction?.capture(event),onEvent:relayEvent});missionLast=null;
+      missionDraft={...missionDraft,polygon:plan.polygon,target:plan.target,targetVisible:false};editorView.set(missionDraft);missionView.setPlan(plan);requestRender();return mission.snapshot();
+    },
     planMission(settings={}){
       const options={...defaults,...settings};
       if(!Number.isFinite(options.speed)||options.speed<1||options.speed>15||
@@ -226,6 +275,7 @@ export async function createLandscape(container, { dataUrl, onChange = () => {},
       const area={...inspection,start:{east:start.x,north:start.y}};
       const model=createSafetyModel(meta,heights,flags,options);
       const plan=planInspection(model,area,options);
+      inspectionOverlay.setVisible(true);
       reconstruction=createReconstruction(meta,area,heights,codes,flags,sampleRGB);
       mission=new MissionSimulation(model,plan,capture=>reconstruction.capture(capture));missionLast=null;selection=null;container.style.cursor='';updateMarkers();missionView.setPlan(plan);requestRender();
       return mission.snapshot();
@@ -233,10 +283,12 @@ export async function createLandscape(container, { dataUrl, onChange = () => {},
     toggleMission(){if(mission){mission.start();missionLast=null;requestRender();}},
     reconstructionData(){return reconstruction?.data??null;},
     reconstructionJSON(){return reconstruction?.toJSON()??null;},
-    clearMission(){reconstruction=null;inspectionOverlay.updateCoverage(null);mission=null;missionLast=null;missionView.setPlan(null);requestRender();},
+    clearMission(){reconstruction=null;inspectionOverlay.updateCoverage(null);inspectionOverlay.setVisible(false);mission=null;missionPlan=null;missionBounds=null;regional?.setFocus(null);missionLast=null;missionView.setPlan(null);editorView.set(missionDraft);requestRender();},
     missionState(){return mission?.snapshot();},
+    missionResult(){return mission?.snapshot().result??null;},
+    missionPlan(){return missionPlan;},
     select(index){if(mission)return;selection=selection===index?null:index;container.style.cursor=selection===null?'':'crosshair';updateMarkers();},
     reset(){if(!mission)cells=[...initialCells];selection=null;container.style.cursor='';setView('top', {reset:true});updateMarkers();},
-    dispose(){disposed=true;document.removeEventListener('visibilitychange',visibility);missionView.dispose();inspectionOverlay.dispose();cancelAnimationFrame(scheduled);observer.disconnect();controls.dispose();window.removeEventListener('keydown',key);renderer.domElement.removeEventListener('pointerdown',pointerDown);renderer.domElement.removeEventListener('pointerup',pointerUp);renderer.domElement.removeEventListener('pointermove',pointerMove);renderer.domElement.removeEventListener('pointerleave',leave);scene.traverse(obj=>{obj.geometry?.dispose();if(Array.isArray(obj.material))obj.material.forEach(m=>m.dispose());else obj.material?.dispose();});terrain.dispose();aerial.dispose();northTexture.dispose();renderer.dispose();renderer.domElement.remove();},
+    dispose(){disposed=true;regional?.dispose();document.removeEventListener('visibilitychange',visibility);missionView.dispose();editorView.dispose();inspectionOverlay.dispose();cancelAnimationFrame(scheduled);observer.disconnect();controls.dispose();window.removeEventListener('keydown',key);renderer.domElement.removeEventListener('pointerdown',pointerDown);renderer.domElement.removeEventListener('pointerup',pointerUp);renderer.domElement.removeEventListener('pointermove',pointerMove);renderer.domElement.removeEventListener('pointerleave',leave);scene.traverse(obj=>{obj.geometry?.dispose();if(Array.isArray(obj.material))obj.material.forEach(m=>m.dispose());else obj.material?.dispose();});terrain.dispose();aerial.dispose();northTexture.dispose();renderer.dispose();renderer.domElement.remove();},
   };
 }

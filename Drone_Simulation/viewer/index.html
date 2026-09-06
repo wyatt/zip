@@ -1,47 +1,58 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><meta name="theme-color" content="#111c24"/><title>Ithaca · Landscape study</title></head>
+<head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><meta name="theme-color" content="#111c24"/><title>Ithaca mission planner</title></head>
 <body>
-  <main id="viewer" class="map-mode" aria-label="Interactive 3D landscape of Ithaca">
-    <div id="scene" tabindex="0" aria-label="Top-down map. Drag to pan, scroll to zoom. Click 3D view to explore the model. Use arrow keys to pan."></div>
-    <nav class="panel tools" aria-label="View controls"><button id="top" class="active" aria-pressed="true">Map</button><button id="orbit" aria-pressed="false">3D view ↗</button><span class="divider"></span><button id="reset" title="Reset camera">Reset ↗</button></nav>
-    <div class="panel legend" aria-label="Aerial imagery source"><span class="legend-title">ENHANCED AERIAL COLOR</span><span>Spring 2023 aerial imagery</span><span>© <a href="https://gis.ny.gov/tompkins-county-orthoimagery-downloads" target="_blank" rel="noopener">NYS ITS Geospatial Services</a></span><span>Missing heights: visual averages · Hover for details</span></div>
-    <footer><span id="extent">1 m cells · measured heights</span><span id="camera-hint">Drag to pan · Scroll to zoom · Click 3D view to explore</span><span>LiDAR 2020 · Cover 2022</span></footer>
-    <div class="map-credit">Land cover: <a href="https://www.usgs.gov/data/chesapeake-bay-land-useland-cover-lulc-database-2024-edition" target="_blank" rel="noopener">USGS / Chesapeake Bay Program</a> · Imagery: NYS ITS</div>
-    <button id="start-marker" class="map-label a" title="Move start point">Start</button>
-    <button id="end-marker" class="map-label b" title="Move end point">End</button>
-    <div class="inspection-caption">Inspection area · 136 × 385 m</div>
-    <section class="panel mission-panel" aria-label="Inspection simulation">
-      <div class="mission-heading"><strong>Inspection simulation</strong><span id="mission-rate">1× REAL TIME</span></div>
-      <div id="mission-phase">Ready</div>
+  <main id="viewer" class="map-mode" aria-label="Interactive Ithaca mission planner">
+    <div id="scene" tabindex="0" aria-label="North-up planning map. Drag to pan and scroll to zoom."></div>
+    <nav class="panel tools" aria-label="View controls">
+      <button id="top" class="active" aria-pressed="true">Plan map</button>
+      <button id="orbit" aria-pressed="false" disabled title="Plan a mission to unlock 3D">3D mission ↗</button>
+      <span class="divider"></span><button id="reset" title="Fit the complete map">Reset view</button>
+    </nav>
+    <section class="panel mission-panel" aria-label="Mission planner">
+      <div class="mission-heading"><div><small>MISSION PLANNER</small><strong>Choose a mission</strong></div><span id="mission-rate">2D SETUP</span></div>
+      <div class="mode-tabs" role="tablist" aria-label="Mission type">
+        <button data-mode="delivery" class="active" role="tab" aria-selected="true">Deliver</button>
+        <button data-mode="inspection" role="tab" aria-selected="false">Inspect</button>
+        <button data-mode="search" role="tab" aria-selected="false">Search</button>
+      </div>
+      <p id="mission-instructions">Place point A, then point B. The route delivers at B and returns to A.</p>
+      <div class="placement-actions">
+        <button id="place-a" class="active">Place A</button><button id="place-b">Place B</button>
+        <button id="draw-area" hidden>Draw area</button><button id="undo-point" hidden>Undo point</button>
+      </div>
+      <div class="coordinate-list">
+        <span><i class="dot-a"></i>A <output id="coord-a">Not placed</output></span>
+        <span id="coord-b-row"><i class="dot-b"></i>B <output id="coord-b">Not placed</output></span>
+        <span id="coord-area-row" hidden><i class="dot-area"></i>Area <output id="coord-area">0 vertices</output></span>
+      </div>
+      <details><summary>Mission specifications</summary>
+        <label>Flight speed <input id="mission-speed" type="number" min="1" max="15" step="0.5" value="5"> m/s</label>
+        <label>Endurance <input id="mission-endurance" type="number" min="5" max="180" step="0.5" value="46.5"> min</label>
+        <label class="area-setting" hidden>Track spacing <input id="mission-spacing" type="number" min="5" max="250" step="5" value="30"> m</label>
+        <label class="search-setting" hidden>Detection radius <input id="mission-detection" type="number" min="5" max="250" step="5" value="50"> m</label>
+        <p>Routes use whole-map 25 m A* and validate altitude against 5 m maximum-return terrain, including clearance and climb limits.</p>
+      </details>
+      <div id="mission-detail" role="status">Click the map to place point A.</div>
+      <div class="mission-actions"><button id="mission-plan">Plan mission</button><button id="mission-run" disabled>Start</button><button id="mission-restart">Clear</button></div>
       <div class="mission-stats"><div><small>MISSION TIME</small><output id="mission-clock">00:00:00</output></div><div><small>BATTERY</small><output id="mission-battery">100.0%</output></div></div>
       <progress id="mission-battery-bar" max="100" value="100" aria-label="Battery remaining"></progress>
-      <div class="mission-parts"><span id="mission-part-1" class="current">Part 1 · East</span><span id="mission-part-2">Part 2 · West</span></div>
-      <div id="mission-progress">42 passes · 7,896 photos planned</div>
-      <div id="mission-arrival">Return target: ≥ 10% at charger</div>
-      <div id="mission-sorties">Flight — · 0 returns</div>
-      <div id="mission-detail" role="status">Home / charger = Start</div>
-      <div class="mission-actions"><button id="mission-run">Start simulation</button><button id="mission-restart">Restart</button></div>
-      <details><summary>Drone assumptions</summary>
-        <label>Flight speed <input id="mission-speed" type="number" min="1" max="15" step="0.5" value="5"> m/s</label>
-        <label>Full-battery endurance <input id="mission-endurance" type="number" min="5" max="180" step="0.5" value="46.5"> min</label>
-        <label>Empty-to-full charging <input id="mission-charge" type="number" min="0.5" max="120" step="0.5" value="20"> min</label>
-        <p>2 m/s climb · 15 ft clearance + 0.5 m body + 1 m uncertainty. Constant flight-time battery model; not fleet-calibrated.</p>
-        <p>Targets 12 m above the local roof or terrain, raised only for nearby obstacle clearance. Slows down for climbs and descents. Missing heights use nearby measured maxima as a simulation estimate. Takeoff/landing use the designated pad column.</p>
-      </details>
-      <p class="mission-disclaimer">Offline simulation · FAA footprints present. Not a flight-ready route. Survey plays at 70×; charging at 140×; travel at 10×.</p>
+      <div id="mission-progress">No mission planned</div>
+      <div id="mission-result" aria-live="polite"></div>
+      <p class="mission-disclaimer">Offline simulation. Planning data is not a flight-ready route or an airspace authorization.</p>
     </section>
-    <section class="panel reconstruction-panel" aria-label="Simulated rooftop reconstruction">
-      <details open><summary>Rooftop mosaic <span>2D · N ↑</span></summary>
+    <section class="panel reconstruction-panel" aria-label="Inspection mosaic" hidden>
+      <details open><summary>Inspection mosaic <span>2D · N ↑</span></summary>
         <p id="reconstruction-status" role="status">Waiting for the first photo</p>
-        <div class="reconstruction-image"><canvas id="reconstruction-canvas" width="136" height="385" aria-label="North-up aerial mosaic revealed by captured photos"></canvas></div>
-        <p>Model colors · 2023 aerial detail. Blank = not yet photographed.</p>
+        <div class="reconstruction-image"><canvas id="reconstruction-canvas" width="1" height="1" aria-label="North-up mosaic revealed by captured photos"></canvas></div>
+        <p>2023 aerial color. Blank cells have not yet been photographed.</p>
         <button id="reconstruction-download" disabled>Download grid JSON</button>
       </details>
     </section>
-    <div id="point-hint" class="point-hint" role="status" hidden></div>
     <div id="hover" class="panel" hidden></div>
-    <div id="loading" class="panel loading" role="status">Bringing the landscape into view…</div>
+    <div id="loading" class="panel loading" role="status">Loading the complete planning map…</div>
+    <div class="map-credit">LiDAR 2020 · Land cover 2022 · <a href="https://gis.ny.gov/tompkins-county-orthoimagery-downloads" target="_blank" rel="noopener">NYS imagery 2023</a></div>
+    <footer><span id="extent">Loading regional surface…</span><span id="camera-hint">2D planning · Drag to pan · Scroll to zoom</span><span id="map-status">Loading overview…</span></footer>
   </main>
   <script type="module" src="/main.js"></script>
 </body>

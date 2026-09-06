@@ -25,6 +25,6 @@ export function bindReconstructionView(view){
       pixels[i*4+3]=data.rgba[i*4+3];
     }
     ctx.putImageData(new ImageData(pixels,data.cols,data.rows),0,0);
-    status.textContent=`${(100*data.coveredCells/(data.rows*data.cols)).toFixed(1)}% covered · ${data.captures.length.toLocaleString()} photos`;
+    status.textContent=`${(100*data.coveredCells/(data.totalCells??data.rows*data.cols)).toFixed(1)}% covered · ${data.captures.length.toLocaleString()} photos`;
   };
 }
