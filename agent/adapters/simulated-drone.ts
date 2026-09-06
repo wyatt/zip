@@ -1,5 +1,5 @@
 import type { AircraftSample, ControlOwner, FlightPlan, GeoPoint, PlanStep } from "../../lib/operations";
-import { metersBetween } from "../../lib/operations";
+import { metersBetween, seededBatteryPct } from "../../lib/operations";
 import { assertCommandContext, type AdapterIdentity, type CommandAcknowledgment, type CommandContext, type DroneAdapter } from "../drone-adapter";
 
 /** A local-process aircraft simulator. All measurements originate here, never in the browser. */
@@ -16,9 +16,9 @@ export class SimulatedDrone implements DroneAdapter {
   private acknowledgments = new Map<string, CommandAcknowledgment>();
   private external = false;
 
-  constructor(private readonly hardwareId: string, private readonly home: GeoPoint) {
+  constructor(private readonly hardwareId: string, private readonly home: GeoPoint, batteryPct?: number) {
     this.target = { position: { ...home }, altitudeM: 0 };
-    this.sample = { sequence: 0, capturedAt: Date.now(), position: { ...home }, altitudeM: 0, batteryPct: 100, headingDeg: 0, speedMps: 0, connected: false, armed: false, airborne: false, navigationHealthy: true, controlOwner: "none", flightMode: "grounded", faults: [] };
+    this.sample = { sequence: 0, capturedAt: Date.now(), position: { ...home }, altitudeM: 0, batteryPct: batteryPct ?? seededBatteryPct(hardwareId), headingDeg: 0, speedMps: 0, connected: false, armed: false, airborne: false, navigationHealthy: true, controlOwner: "none", flightMode: "grounded", faults: [] };
   }
   async connect(): Promise<AdapterIdentity> {
     if (!this.timer) {

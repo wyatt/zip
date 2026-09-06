@@ -273,6 +273,78 @@ export function formatDurationSec(sec: number) {
   return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
 }
 
+export function formatDistanceM(meters: number) {
+  if (!Number.isFinite(meters) || meters < 0) return "—";
+  if (meters < 1000) return `${Math.round(meters)} m`;
+  const km = meters / 1000;
+  return `${km < 10 ? km.toFixed(1) : Math.round(km)} km`;
+}
+
+/** Idle battery for Wyatt's Goldwin Smith Hall fleet. Live telemetry overrides this. */
+export const SEEDED_VEHICLE_BATTERY_PCT: Record<string, number> = {
+  "wyatt-gsh-mini": 52,
+  "wyatt-gsh-mavic": 67,
+  "wyatt-gsh-industrial": 81,
+  "wyatt-gsh-cargo": 94,
+};
+export const SIM_BATTERY_DRAIN_PCT_PER_SEC = 0.05;
+export const ACCEPT_NEAREST_BAND_M = 300;
+
+export function seededBatteryPct(hardwareId: string, fallback = 100) {
+  return SEEDED_VEHICLE_BATTERY_PCT[hardwareId] ?? fallback;
+}
+
+export function resolvedBatteryPct(input: {
+  batteryPct?: number | null;
+  liveBatteryPct?: number | null;
+  hardwareId?: string;
+}) {
+  const seeded = input.hardwareId ? SEEDED_VEHICLE_BATTERY_PCT[input.hardwareId] : undefined;
+  const stored = input.batteryPct != null && Number.isFinite(input.batteryPct) ? input.batteryPct : seeded;
+  const live = input.liveBatteryPct != null && Number.isFinite(input.liveBatteryPct) ? input.liveBatteryPct : null;
+  if (live != null && !(seeded != null && live === 100 && stored != null && stored !== 100)) return live;
+  if (stored != null) return stored;
+  return 100;
+}
+
+export function canCompleteJobWithBattery(
+  batteryPct: number,
+  job: { kind: JobKind; location: GeoPoint; destinations: GeoPoint[]; altitudeM: number; hoverSec: number },
+  home: GeoPoint,
+  maxRadiusM: number,
+) {
+  try {
+    const plan = createFlightPlan({ ...job, home, mode: "autonomous", maxRadiusM });
+    const drain = previewAcceptedFlight({ ...job, home }).durationSec * SIM_BATTERY_DRAIN_PCT_PER_SEC;
+    return batteryPct >= plan.minimumBatteryPct && batteryPct - drain >= plan.minimumBatteryPct;
+  } catch {
+    return false;
+  }
+}
+
+/** Nearest aircraft that can finish the job; among those nearby, the lowest battery. */
+export function pickAcceptAircraft<T extends { home: GeoPoint; maxRadiusM: number; batteryPct?: number | null; liveBatteryPct?: number | null; hardwareId?: string }>(
+  vehicles: T[],
+  job: { kind: JobKind; location: GeoPoint; destinations: GeoPoint[]; altitudeM: number; hoverSec: number },
+): T | undefined {
+  if (!vehicles.length) return undefined;
+  const scored = vehicles.map(vehicle => {
+    const battery = resolvedBatteryPct(vehicle);
+    return {
+      vehicle,
+      battery,
+      distanceM: metersBetween(vehicle.home, job.location),
+      canComplete: canCompleteJobWithBattery(battery, job, vehicle.home, vehicle.maxRadiusM),
+    };
+  });
+  const capable = scored.filter(item => item.canComplete);
+  const pool = capable.length ? capable : scored;
+  const nearest = Math.min(...pool.map(item => item.distanceM));
+  const band = pool.filter(item => item.distanceM <= nearest + ACCEPT_NEAREST_BAND_M);
+  band.sort((a, b) => a.battery - b.battery || a.distanceM - b.distanceM);
+  return band[0]?.vehicle;
+}
+
 export function operationStatusPending(state: OperationState) {
   return !["completed", "cancelled", "attention"].includes(state);
 }

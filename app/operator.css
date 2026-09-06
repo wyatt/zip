@@ -475,6 +475,10 @@
 .operator-retro .status.completed {
   background: var(--canvas);
 }
+.operator-retro .job-row .status.completed {
+  background: #2fbf4a;
+  color: #fff;
+}
 .operator-retro .status.running,
 .operator-retro .status.returning {
   background: var(--ink);

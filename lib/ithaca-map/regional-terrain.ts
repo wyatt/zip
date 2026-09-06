@@ -78,18 +78,18 @@ export async function createRegionalTerrain(
     baseline,
     requestRender,
     onStatus = () => undefined,
-    detailLevel = 5,
   }: {
     url: string;
     meta: RegionMeta;
     baseline: number;
     requestRender: () => void;
     onStatus?: (message: string) => void;
-    detailLevel?: 1 | 5;
   },
 ) {
   let disposed = false, activeLoads = 0, timer = 0;
   let focus: FocusBounds | null = null;
+  let pathTiles = new Set<string>();
+  const corridor = new Uint8Array(200 * 200);
   let focusPlanes: Plane[] | null = null;
   let lastCamera: { camera: Camera & { zoom: number; left: number; right: number }; width: number; target: Vector3; signature: string } | null = null;
   const group = new Group();
@@ -156,7 +156,17 @@ export async function createRegionalTerrain(
     let instance = 0;
     for (let i = 0; i < heights.length; i++) {
       if (!Number.isFinite(heights[i])) continue;
-      const r = Math.floor(i / n), c = i % n, height = Math.max(0.01, heights[i]! - baseline);
+      const r = Math.floor(i / n), c = i % n;
+      if (focus) {
+        const east = tile.west + (c + 0.5) * level, north = tile.north - (r + 0.5) * level;
+        if (east < focus.west || east > focus.east || north < focus.south || north > focus.north) continue;
+        if (level === 1) {
+          const col = Math.max(0, Math.min(199, Math.floor((east + 2500) / 25)));
+          const row = Math.max(0, Math.min(199, Math.floor((2500 - north) / 25)));
+          if (!corridor[row * 200 + col]) continue;
+        }
+      }
+      const height = Math.max(0.01, heights[i]! - baseline);
       position.set((c + 0.5) * level - tile.size / 2, height / 2, (r + 0.5) * level - tile.size / 2);
       scale.set(1, height / level, 1);
       matrix.compose(position, rotation, scale);
@@ -239,11 +249,12 @@ export async function createRegionalTerrain(
   }
   function pump() {
     if (disposed) return;
-    for (const [id, wanted] of desired) {
-      if (activeLoads >= 2) break;
-      if (resident.get(id)?.level === wanted.level || pending.has(id) || failed.has(`${id}/${wanted.level}`)) continue;
+    const work = [...desired].sort(([a], [b]) => Number(resident.has(a)) - Number(resident.has(b)));
+    for (const [id, wanted] of work) {
+      if (activeLoads >= 4) break;
+      if (resident.get(id)?.level === wanted.level || pending.has(id)) continue;
       const cached = cache.get(id);
-      if (cached?.level === wanted.level) {
+      if (cached && (cached.level === wanted.level || (wanted.level === 1 && cached.level === 5 && !resident.has(id)))) {
         const previous = resident.get(id);
         if (previous && previous !== cached) detach(previous);
         resident.set(id, cached);
@@ -252,14 +263,19 @@ export async function createRegionalTerrain(
         cache.set(id, cached);
         updateMask();
         requestRender();
-        continue;
+        if (cached.level === wanted.level) continue;
       }
+      const level = wanted.level === 1 && !resident.has(id) ? 5 : wanted.level;
+      if (failed.has(`${id}/${level}`)) continue;
       const controller = new AbortController();
       pending.set(id, controller);
       activeLoads++;
-      load(wanted.tile, wanted.level, false, controller.signal).then((result) => {
+      load(wanted.tile, level, false, controller.signal).then((result) => {
         const current = desired.get(id);
-        if (disposed || current?.level !== result.level) { free(result); return; }
+        if (disposed || !current || (current.level !== result.level && !(current.level === 1 && result.level === 5))) {
+          free(result);
+          return;
+        }
         const previous = resident.get(id);
         if (previous && previous !== result) detach(previous);
         resident.set(id, result);
@@ -269,7 +285,7 @@ export async function createRegionalTerrain(
         requestRender();
       }).catch((error: unknown) => {
         if (!disposed && !controller.signal.aborted) {
-          failed.add(`${id}/${wanted.level}`);
+          failed.add(`${id}/${level}`);
           console.warn(error instanceof Error ? error.message : error);
         }
       }).finally(() => {
@@ -281,18 +297,6 @@ export async function createRegionalTerrain(
     report();
   }
 
-  function selectRegionalTiles(tiles: RegionTile[], { x, z, worldPerPixel, visible }: { x: number; z: number; worldPerPixel: number; visible: (tile: RegionTile) => boolean }, maxTiles = 20) {
-    if (worldPerPixel >= 6) return [];
-    const candidates = tiles.filter((tile) => visible(tile))
-      .map((tile) => ({ tile, distance: Math.hypot(tile.west + tile.size / 2 - x, -tile.north + tile.size / 2 - z) }))
-      .sort((a, b) => a.distance - b.distance)
-      .slice(0, maxTiles);
-    return candidates.map(({ tile }, i) => ({
-      tile,
-      level: detailLevel === 1 && worldPerPixel < 1.5 && i < 4 ? 1 : 5,
-    }));
-  }
-
   function select() {
     timer = 0;
     if (!lastCamera || disposed) return;
@@ -301,15 +305,19 @@ export async function createRegionalTerrain(
     proj.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     frustum.setFromProjectionMatrix(proj);
     const worldPerPixel = (camera.right - camera.left) / (camera.zoom * width);
-    const wanted = selectRegionalTiles(meta.tiles, {
-      x: target.x,
-      z: target.z,
-      worldPerPixel: focus ? Math.min(worldPerPixel, 5) : worldPerPixel,
-      visible: (tile) => intersectsFocus(tile) && (!!focus || frustum.intersectsBox(new Box3(
+    const wanted = meta.tiles.filter((tile) => {
+      if (focus) return pathTiles.has(tile.id) && intersectsFocus(tile);
+      return frustum.intersectsBox(new Box3(
         new Vector3(tile.west, meta.zMin - baseline, -tile.north),
         new Vector3(tile.west + tile.size, meta.zMax - baseline, -tile.north + tile.size),
-      ))),
-    }, focus ? meta.tiles.length : 4);
+      ));
+    }).sort((a, b) =>
+      Math.hypot(a.west + a.size / 2 - target.x, -a.north + a.size / 2 - target.z) -
+      Math.hypot(b.west + b.size / 2 - target.x, -b.north + b.size / 2 - target.z)
+    ).slice(0, focus ? 2 : 8).map((tile, i) => ({
+      tile,
+      level: (focus || worldPerPixel < 2.5) && i < (focus ? 2 : 4) ? 1 : 5,
+    }));
     desired = new Map(wanted.map((value) => [value.tile.id, value]));
     for (const [id, entry] of resident) if (!desired.has(id)) { detach(entry); resident.delete(id); }
     for (const [id, controller] of pending) if (!desired.has(id)) controller.abort();
@@ -343,6 +351,13 @@ export async function createRegionalTerrain(
         for (const [id, controller] of pending) {
           if (!intersectsFocus(tileById.get(id))) controller.abort();
         }
+      } else {
+        for (const [id, entry] of [...cache]) {
+          if (entry.level !== 1) continue;
+          cache.delete(id);
+          resident.delete(id);
+          free(entry);
+        }
       }
       updateMask();
       if (lastCamera) {
@@ -351,6 +366,37 @@ export async function createRegionalTerrain(
         timer = window.setTimeout(select, 0);
       }
       requestRender();
+    },
+    setPath(points: { east: number; north: number }[]) {
+      corridor.fill(0);
+      pathTiles = new Set();
+      const mark = (east: number, north: number) => {
+        const col = Math.floor((east + 2500) / 25);
+        const row = Math.floor((2500 - north) / 25);
+        for (let dr = -2; dr <= 2; dr++) {
+          for (let dc = -2; dc <= 2; dc++) {
+            const r = row + dr, c = col + dc;
+            if (r < 0 || r > 199 || c < 0 || c > 199) continue;
+            corridor[r * 200 + c] = 1;
+            pathTiles.add(`${Math.floor(r / 20)}-${Math.floor(c / 20)}`);
+          }
+        }
+      };
+      for (let i = 0; i < points.length; i++) {
+        const point = points[i]!;
+        mark(point.east, point.north);
+        const next = points[i + 1];
+        if (!next) continue;
+        const steps = Math.ceil(Math.hypot(next.east - point.east, next.north - point.north) / 20);
+        for (let step = 1; step < steps; step++) {
+          mark(point.east + (next.east - point.east) * step / steps, point.north + (next.north - point.north) * step / steps);
+        }
+      }
+      if (lastCamera) {
+        lastCamera.signature = "";
+        clearTimeout(timer);
+        timer = window.setTimeout(select, 0);
+      }
     },
     heightAt(east: number, north: number, fallback: number) {
       const res = meta.overviewResolution;
@@ -365,7 +411,7 @@ export async function createRegionalTerrain(
       if (lastCamera?.signature === signature) return;
       lastCamera = { camera, width, target, signature };
       clearTimeout(timer);
-      timer = window.setTimeout(select, 120);
+      timer = window.setTimeout(select, 0);
     },
     hover(raycaster: import("three").Raycaster) {
       const hit = raycaster.intersectObjects(group.children, false)[0];

@@ -151,6 +151,9 @@
   font-weight: 800;
   letter-spacing: 0.02em;
 }
+.mission-card .status.completed {
+  background: #2fbf4a;
+}
 .mission-card .status.open,
 .mission-card .status.assigned {
   background-image: linear-gradient(
@@ -168,11 +171,26 @@
   0% { background-position: -42% 0; }
   100% { background-position: 142% 0; }
 }
+.status-pulse {
+  animation: status-text-pulse 1.6s ease-in-out infinite;
+}
+@keyframes status-text-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.38;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .mission-card .status.open,
   .mission-card .status.assigned {
     animation: none;
     background-image: none;
+  }
+  .status-pulse {
+    animation: none;
   }
 }
 .mode-grid {

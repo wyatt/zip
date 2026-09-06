@@ -6,7 +6,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { requireAgentSession, requireCredential } from "./access";
 import { profileLaunchSites, resolvedVehicleHome } from "./fleet";
 import { aircraftSample, capability, controlOwner, environment } from "./operationsSchema";
-import { preflightProblems, SESSION_LEASE_MS, stepSatisfied, validateSample } from "../lib/operations";
+import { preflightProblems, SESSION_LEASE_MS, stepSatisfied, TELEMETRY_STALE_MS, validateSample } from "../lib/operations";
 import { formatUsd, quoteWorkOrder } from "../lib/pricing";
 
 const sessionArgs = { token: v.string(), sessionId: v.id("agentSessions") };
@@ -15,7 +15,7 @@ export const fleet = query({ args: { token: v.string() }, handler: async (ctx, {
   const vehicles = await ctx.db.query("vehicles").withIndex("by_operator", q => q.eq("operatorId", operatorId)).take(100);
   const profile = await ctx.db.query("operatorProfiles").withIndex("by_user", q => q.eq("userId", operatorId)).unique();
   const sites = profileLaunchSites(profile);
-  return vehicles.map(vehicle => ({ vehicleId: vehicle._id, name: vehicle.name, hardwareId: vehicle.hardwareId, environment: vehicle.environment, home: resolvedVehicleHome(sites, vehicle), capabilities: vehicle.capabilities }));
+  return vehicles.map(vehicle => ({ vehicleId: vehicle._id, name: vehicle.name, hardwareId: vehicle.hardwareId, environment: vehicle.environment, home: resolvedVehicleHome(sites, vehicle), capabilities: vehicle.capabilities, batteryPct: vehicle.batteryPct }));
 } });
 export const pulse = mutation({ args: { token: v.string() }, handler: async (ctx, { token }) => {
   const { credential } = await requireCredential(ctx, token);
@@ -150,7 +150,8 @@ export const acknowledge = mutation({ args: { ...sessionArgs, commandId: v.id("c
   }
   const expectedOwner = command.kind === "takeover" || (command.kind === "start" && operation.plan.mode === "manual") ? operation.manualControl : "autonomy";
   const telemetry = await ctx.db.query("vehicleTelemetry").withIndex("by_vehicle", q => q.eq("vehicleId", vehicle._id)).unique();
-  if (args.owner !== expectedOwner || !telemetry || telemetry.sessionId !== args.sessionId || !telemetry.sample.connected || Date.now() - telemetry.sample.capturedAt > 2000 || telemetry.sample.controlOwner !== expectedOwner) throw new Error("Aircraft has not confirmed the requested control owner.");
+  const telemetryAge = telemetry ? Date.now() - telemetry.receivedAt : TELEMETRY_STALE_MS + 1;
+  if (args.owner !== expectedOwner || !telemetry || telemetry.sessionId !== args.sessionId || !telemetry.sample.connected || telemetryAge > TELEMETRY_STALE_MS || telemetry.sample.controlOwner !== expectedOwner) throw new Error("Aircraft has not confirmed the requested control owner.");
   await ctx.db.patch(command._id, { status: "acknowledged", acknowledgedAt: Date.now() });
   const state = expectedOwner !== "autonomy" ? "manual" as const : command.kind === "land" ? "landing" as const : command.kind === "return" ? "returning" as const : command.kind === "hold" ? "manual" as const : "active" as const;
   await ctx.db.patch(operation._id, { state, controlOwner: args.owner, attention: undefined, ...(command.kind === "start" ? { startedAt: Date.now() } : {}) });
@@ -163,7 +164,9 @@ export const publish = mutation({ args: { ...sessionArgs, sample: aircraftSample
   validateSample(args.sample, receivedAt);
   const previous = await ctx.db.query("vehicleTelemetry").withIndex("by_vehicle", q => q.eq("vehicleId", vehicle._id)).unique();
   if (previous?.sessionId === args.sessionId && args.sample.sequence <= previous.sample.sequence) return;
-  if (previous?.sessionId === args.sessionId && args.sample.capturedAt <= previous.sample.capturedAt) return;
+  // Sequence is the source order. Do not compare agent capturedAt to the previous
+  // restamped receivedAt — cloud RTT makes the next sample look older and drops the
+  // control-owner confirmation that acknowledge requires.
   const sample = { ...args.sample, capturedAt: receivedAt };
   const record = { vehicleId: vehicle._id, sessionId: args.sessionId, environment: vehicle.environment, receivedAt, sample };
   if (previous) await ctx.db.patch(previous._id, record); else await ctx.db.insert("vehicleTelemetry", record);

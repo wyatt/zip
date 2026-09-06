@@ -3,6 +3,8 @@ import L from "leaflet";
 import { useEffect, useRef, useState } from "react";
 import type { SurveyArea } from "@/lib/areas";
 import type { GeoPoint } from "@/lib/operations";
+import { fromLocal, toLocal } from "@/lib/geo-local";
+import { ITHACA_HOME, ITHACA_REGION_API, ITHACA_SIZE_M } from "@/lib/ithaca";
 import { addSatelliteTiles, SATELLITE_MAX_ZOOM } from "@/lib/satellite-tiles";
 
 const latLng = (point: GeoPoint): L.LatLngTuple => [point.lat, point.lon];
@@ -10,10 +12,18 @@ const GENERIC_DRONE = '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="m10 
 function escapeHtml(value: string) {
   return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
-type MapPin = { label: string; point: GeoPoint };
+type MapPin = { id?: string; label: string; point: GeoPoint };
 type FleetThumb = { src: string; label: string; count: number };
 type FleetPin = { id: string; label: string; point: GeoPoint; src: string; highlighted?: boolean; thumbs?: FleetThumb[] };
-type Props = { home: GeoPoint; selected?: GeoPoint; route?: GeoPoint[]; area?: SurveyArea; selectionPrompt?: string; position?: GeoPoint | null; stale?: boolean; chrome?: boolean; hideHome?: boolean; selectedLabel?: string; markers?: MapPin[]; fleet?: FleetPin[]; trail?: GeoPoint[]; faa?: { facility?: GeoJSON.GeoJsonObject; nsfr?: GeoJSON.GeoJsonObject }; onSelect?: (point: GeoPoint) => void };
+type Props = { home: GeoPoint; selected?: GeoPoint; route?: GeoPoint[]; area?: SurveyArea; selectionPrompt?: string; position?: GeoPoint | null; stale?: boolean; chrome?: boolean; hideHome?: boolean; selectedLabel?: string; markers?: MapPin[]; fleet?: FleetPin[]; trail?: GeoPoint[]; faa?: { facility?: GeoJSON.GeoJsonObject; nsfr?: GeoJSON.GeoJsonObject }; onSelect?: (point: GeoPoint) => void; onMarkerMove?: (id: string, point: GeoPoint) => void };
+function pinIcon(label: string) {
+  return L.divIcon({
+    className: "job-pin",
+    html: `<span class="job-pin-btn" role="img" aria-label="${escapeHtml(label)}">${escapeHtml(label)}</span>`,
+    iconSize: [32, 32],
+    iconAnchor: [16, 16],
+  });
+}
 function fleetIcon(aircraft: FleetPin, dimmed: boolean) {
   const src = escapeHtml(aircraft.src);
   const label = escapeHtml(aircraft.label);
@@ -29,6 +39,53 @@ function fleetIcon(aircraft: FleetPin, dimmed: boolean) {
     iconAnchor: aircraft.highlighted ? [20, 20] : [16, 16],
   });
 }
+function attachIthacaDetail(map: L.Map) {
+  const group = L.layerGroup().addTo(map);
+  const shown = new Map<string, L.ImageOverlay>();
+  let tiles: { id: string; west: number; north: number; size: number }[] = [];
+  const update = () => {
+    const mpp = 40075016.686 * Math.cos((map.getCenter().lat * Math.PI) / 180) / (256 * 2 ** map.getZoom());
+    const view = map.getBounds();
+    const sw = toLocal(ITHACA_HOME, { lat: view.getSouth(), lon: view.getWest() });
+    const ne = toLocal(ITHACA_HOME, { lat: view.getNorth(), lon: view.getEast() });
+    const half = ITHACA_SIZE_M / 2;
+    const inside = ne.east > -half && sw.east < half && ne.north > -half && sw.north < half;
+    const cx = (sw.east + ne.east) / 2, cy = (sw.north + ne.north) / 2;
+    const wanted = mpp < 2.5 && inside
+      ? tiles.filter((tile) =>
+          tile.west < ne.east && tile.west + tile.size > sw.east &&
+          tile.north > sw.north && tile.north - tile.size < ne.north
+        ).sort((a, b) =>
+          Math.hypot(a.west + a.size / 2 - cx, a.north - a.size / 2 - cy) -
+          Math.hypot(b.west + b.size / 2 - cx, b.north - b.size / 2 - cy)
+        ).slice(0, 4)
+      : [];
+    const keep = new Set(wanted.map((tile) => tile.id));
+    for (const [id, overlay] of shown) {
+      if (keep.has(id)) continue;
+      group.removeLayer(overlay);
+      shown.delete(id);
+    }
+    for (const tile of wanted) {
+      if (shown.has(tile.id)) continue;
+      const nw = fromLocal(ITHACA_HOME, { east: tile.west, north: tile.north });
+      const se = fromLocal(ITHACA_HOME, { east: tile.west + tile.size, north: tile.north - tile.size });
+      const overlay = L.imageOverlay(`${ITHACA_REGION_API}tiles/${tile.id}/aerial.jpg`, [[se.lat, nw.lon], [nw.lat, se.lon]], {
+        opacity: 1,
+        interactive: false,
+        className: "ithaca-detail",
+      });
+      overlay.addTo(group);
+      shown.set(tile.id, overlay);
+    }
+  };
+  void fetch(`${ITHACA_REGION_API}manifest.json`)
+    .then((response) => (response.ok ? response.json() : Promise.reject()))
+    .then((meta: { tiles: typeof tiles }) => { tiles = meta.tiles; update(); })
+    .catch(() => undefined);
+  map.on("moveend zoomend", update);
+  return () => { map.off("moveend zoomend", update); group.remove(); };
+}
 function fleetTooltip(aircraft: FleetPin) {
   if (!aircraft.thumbs?.length) return escapeHtml(aircraft.label);
   const tiles = aircraft.thumbs.map((thumb) => {
@@ -37,27 +94,32 @@ function fleetTooltip(aircraft: FleetPin) {
   }).join("");
   return `<span class="fleet-thumbs">${tiles}</span>`;
 }
-export default function GeographicMap({ home, selected, route, area, selectionPrompt, position, stale, chrome = true, hideHome, selectedLabel, markers, fleet, trail, faa, onSelect }: Props) {
-  const container = useRef<HTMLDivElement>(null), map = useRef<L.Map | null>(null), overlays = useRef<L.LayerGroup | null>(null), fleetLayers = useRef<L.LayerGroup | null>(null), drone = useRef<L.Marker | null>(null), faaLayer = useRef<L.LayerGroup | null>(null), trailLine = useRef<L.Polyline | null>(null);
+export default function GeographicMap({ home, selected, route, area, selectionPrompt, position, stale, chrome = true, hideHome, selectedLabel, markers, fleet, trail, faa, onSelect, onMarkerMove }: Props) {
+  const container = useRef<HTMLDivElement>(null), map = useRef<L.Map | null>(null), overlays = useRef<L.LayerGroup | null>(null), pinLayers = useRef<L.LayerGroup | null>(null), fleetLayers = useRef<L.LayerGroup | null>(null), drone = useRef<L.Marker | null>(null), faaLayer = useRef<L.LayerGroup | null>(null), trailLine = useRef<L.Polyline | null>(null);
   const select = useRef(onSelect);
+  const movePin = useRef(onMarkerMove);
   const fleetRef = useRef(fleet);
   fleetRef.current = fleet;
   const [loaded, setLoaded] = useState(false), [error, setError] = useState(false);
   useEffect(() => { select.current = onSelect; }, [onSelect]);
+  useEffect(() => { movePin.current = onMarkerMove; }, [onMarkerMove]);
   const initialHome = useRef(home);
   useEffect(() => {
     const instance = L.map(container.current!, { zoomControl: false, minZoom: 2, maxZoom: SATELLITE_MAX_ZOOM }).setView(latLng(initialHome.current), 17);
     map.current = instance;
     L.control.zoom({ position: "bottomright" }).addTo(instance); L.control.scale({ imperial: false }).addTo(instance);
     overlays.current = L.layerGroup().addTo(instance);
+    pinLayers.current = L.layerGroup().addTo(instance);
     fleetLayers.current = L.layerGroup().addTo(instance);
     faaLayer.current = L.layerGroup().addTo(instance);
     addSatelliteTiles(instance, { onLoad: () => setLoaded(true), onError: () => setError(true) });
+    const detachDetail = attachIthacaDetail(instance);
     instance.on("click", (event: L.LeafletMouseEvent) => select.current?.({ lat: event.latlng.lat, lon: event.latlng.lng }));
     const observer = new ResizeObserver(() => instance.invalidateSize()); observer.observe(container.current!);
-    return () => { observer.disconnect(); instance.remove(); map.current = null; drone.current = null; };
+    return () => { detachDetail(); observer.disconnect(); instance.remove(); map.current = null; drone.current = null; };
   }, []);
-  const geometry = JSON.stringify({ home, selected, route, area, hideHome, selectedLabel, markers, fleetIds: (fleet ?? []).map(item => item.id) });
+  const geometry = JSON.stringify({ home, selected, route, area, hideHome, selectedLabel, fleetIds: (fleet ?? []).map(item => item.id) });
+  const pinKey = JSON.stringify((markers ?? []).map((marker) => ({ id: marker.id ?? marker.label, label: marker.label, lat: marker.point.lat, lon: marker.point.lon })));
   const fleetKey = JSON.stringify(fleet ?? []);
   const faaKey = JSON.stringify(faa ?? null);
   const trailKey = JSON.stringify(trail ?? []);
@@ -67,15 +129,31 @@ export default function GeographicMap({ home, selected, route, area, selectionPr
     overlays.current.clearLayers();
     if (!hideHome) L.circleMarker(latLng(home), { radius: 6, color: "#fff", weight: 2, fillColor: "white", fillOpacity: 1 }).bindTooltip("Launch", { permanent: true, direction: "right" }).addTo(overlays.current);
     if (selected) L.circleMarker(latLng(selected), { radius: 7, color: "#fff", weight: 2, fillColor: "#c45c38", fillOpacity: 1 }).bindTooltip(selectedLabel ?? "Job location", { permanent: true, direction: "right" }).addTo(overlays.current);
-    for (const marker of markers ?? []) {
-      L.circleMarker(latLng(marker.point), { radius: 6, color: "#fff", weight: 2, fillColor: "white", fillOpacity: 1 }).bindTooltip(marker.label, { permanent: true, direction: "right" }).addTo(overlays.current);
-    }
     if (area) L.rectangle([latLng(area.northWest), latLng(area.southEast)], { color: "#fff", weight: 2, fillColor: "#c45c38", fillOpacity: .18, interactive: false }).addTo(overlays.current);
     if (route?.length) L.polyline(route.map(latLng), { color: "#ffd18a", weight: 3, opacity: 0.95 }).addTo(overlays.current);
     const fleetPoints = (fleetRef.current ?? []).map(item => item.point);
-    const bounds = [home, ...(route ?? []), ...(area ? [area.northWest, area.southEast] : []), ...(selected ? [selected] : []), ...(markers ?? []).map(marker => marker.point), ...fleetPoints].map(latLng);
+    const bounds = [home, ...(route ?? []), ...(area ? [area.northWest, area.southEast] : []), ...(selected ? [selected] : []), ...fleetPoints].map(latLng);
     if (!select.current) map.current.fitBounds(L.latLngBounds(bounds).pad(.3), { maxZoom: 16, animate: false });
   }, [geometry]);
+  useEffect(() => {
+    if (!pinLayers.current) return;
+    pinLayers.current.clearLayers();
+    for (const marker of JSON.parse(pinKey) as { id: string; label: string; lat: number; lon: number }[]) {
+      const pin = L.marker([marker.lat, marker.lon], {
+        draggable: !!movePin.current,
+        autoPan: true,
+        bubblingMouseEvents: false,
+        zIndexOffset: 600,
+        icon: pinIcon(marker.label),
+      }).bindTooltip(marker.label === "A" ? "Pickup" : marker.label === "B" ? "Drop-off" : marker.label, { direction: "top" });
+      pin.on("click", (event) => L.DomEvent.stopPropagation(event));
+      pin.on("dragend", () => {
+        const next = pin.getLatLng();
+        movePin.current?.(marker.id, { lat: next.lat, lon: next.lng });
+      });
+      pin.addTo(pinLayers.current);
+    }
+  }, [pinKey]);
   useEffect(() => {
     if (!fleetLayers.current) return;
     const aircraft = JSON.parse(fleetKey) as FleetPin[];
@@ -115,7 +193,12 @@ export default function GeographicMap({ home, selected, route, area, selectionPr
   }, [faaKey]);
   useEffect(() => {
     if (!map.current || !select.current) return;
-    map.current.setView(latLng(home), 17);
-  }, [home.lat, home.lon]);
+    const fleetPoints = (fleetRef.current ?? []).map(item => item.point);
+    if (fleetPoints.length) {
+      map.current.fitBounds(L.latLngBounds([home, ...fleetPoints].map(latLng)).pad(.35), { maxZoom: 15, animate: false });
+      return;
+    }
+    if (!hideHome) map.current.setView(latLng(home), 17);
+  }, [home.lat, home.lon, hideHome, fleetKey]);
   return <div className={`map-wrap street-map-wrap${chrome ? "" : " map-bare"}`}>{chrome && <div className="street-toolbar"><strong>{onSelect ? selectionPrompt ?? "Choose the job location" : "Flight area"}</strong><button className="text-button" onClick={() => map.current?.fitBounds(L.latLngBounds([home, ...(route ?? []), ...(area ? [area.northWest, area.southEast] : []), ...(selected ? [selected] : []), ...(markers ?? []).map(marker => marker.point)].map(latLng)).pad(.3), { maxZoom: 16 })}>Fit flight area</button></div>}<div ref={container} className="street-map" data-testid="flight-map" data-tiles-loaded={loaded} />{chrome && onSelect && <div className="map-instruction"><span>{selectionPrompt ?? "Click the map to choose a location."}</span><button type="button" onClick={() => { const center = map.current?.getCenter(); if (center) onSelect({ lat: center.lat, lon: center.lng }); }}>Use map center</button></div>}{error && <p className="tile-error" role="status">Map unavailable. Try again shortly.</p>}</div>;
 }

@@ -9,12 +9,15 @@ import {
   OPERATION_LABELS,
   REQUEST_MODES,
   TELEMETRY_STALE_MS,
+  formatDistanceM,
   formatDurationSec,
   metersBetween,
   operationStatusPending,
+  pickAcceptAircraft,
   preflightProblems,
   previewAcceptedFlight,
   remainingFlightSec,
+  resolvedBatteryPct,
   type CommandKind,
   type ControlMode,
   type Environment,
@@ -33,14 +36,14 @@ import { areaGeometry, surveyArea, type SurveyArea } from "@/lib/areas";
 import { CameraPanel } from "./camera-panel";
 import { clock, DEMO_PHASE_LABELS } from "@/lib/mission-snapshot";
 import { OperatorSplit } from "./operator-split";
-import { FALLBACK_LOCATION, useBrowserLocation } from "./use-browser-location";
+import { useBrowserLocation } from "./use-browser-location";
 import { useRegionalAcceptPreview } from "./use-regional-preview";
 import { DRONE_TYPES, droneTypeByModel } from "@/lib/aircraft";
 import { ITHACA_HOME } from "@/lib/ithaca";
 import { ArrowLeft } from "pixelarticons/react/ArrowLeft";
 import { Trash } from "pixelarticons/react/Trash";
 
-export const INITIAL_LOCATION = FALLBACK_LOCATION;
+export const INITIAL_LOCATION = ITHACA_HOME;
 export function messageOf(error: unknown) {
   if (!(error instanceof Error)) return "The request could not be completed.";
   const match = error.message.match(/Uncaught Error: ([^\n]+)/);
@@ -142,7 +145,6 @@ function CustomerWorkspace() {
   const submit = useMutation(api.workOrders.submit),
     cancel = useMutation(api.workOrders.cancel);
   const [operationId, selectOperation] = useOperationSelection();
-  const { point: here, fromBrowser } = useBrowserLocation();
   const [page, setPage] = useState<"home" | "compose" | "mission">("home");
   const [kind, setKind] = useState<RequestKind>("deliver");
   const [location, setLocation] = useState<GeoPoint | null>(null);
@@ -171,10 +173,6 @@ function CustomerWorkspace() {
   useEffect(() => {
     if (selected?.operationId) selectOperation(selected.operationId);
   }, [selected?.operationId]);
-  useEffect(() => {
-    if (!fromBrowser || location || isAreaJob || isDelivery || page !== "compose") return;
-    setLocation(here);
-  }, [fromBrowser, here, location, isAreaJob, isDelivery, page]);
   const area =
     isAreaJob && firstCorner && secondCorner
       ? surveyArea(firstCorner, secondCorner)
@@ -218,6 +216,22 @@ function CustomerWorkspace() {
         : point,
     );
   };
+  const moveDeliveryPoint = (id: string, point: GeoPoint) => {
+    if (id === "a") {
+      setFirstCorner(point);
+      setLocation(point);
+      setCorner("first");
+      if (secondCorner && metersBetween(point, secondCorner) < 10) {
+        setSecondCorner(offsetPoint(point, 80));
+      }
+      return;
+    }
+    if (id === "b") {
+      const origin = firstCorner ?? point;
+      setSecondCorner(metersBetween(origin, point) < 10 ? offsetPoint(origin, 80) : point);
+      setCorner("second");
+    }
+  };
   function goHome() {
     setPage("home");
     setError("");
@@ -250,6 +264,20 @@ function CustomerWorkspace() {
       : page === "mission"
         ? (selected?.title ?? "Mission")
         : "Requests";
+  const jobPoint = geometry?.center ?? firstCorner ?? location ?? ITHACA_HOME;
+  const nearby = useQuery(
+    api.workOrders.availableNearby,
+    page === "compose"
+      ? {
+          kind,
+          location: jobPoint,
+          destinations: secondCorner ? [secondCorner] : [],
+          payloadKg: 0,
+          environment: "aircraft",
+        }
+      : "skip",
+  );
+  const nearbyFleet = spreadFleet(nearby ?? []);
   const split = page !== "home";
   const missions = orders?.filter((order) => order.status !== "cancelled");
   useEffect(() => {
@@ -445,8 +473,9 @@ function CustomerWorkspace() {
                   <fieldset>
                     <legend>Pickup and drop-off</legend>
                     <p className="muted">
-                      Place point A, then point B. The planner routes A → B,
-                      delivers at B, and returns to A.
+                      Place point A, then point B. Drag either marker to
+                      refine the route. The planner flies A → B, delivers at
+                      B, and returns to A.
                     </p>
                     <div className="location-choices">
                       {(["first", "second"] as const).map((slot, index) => (
@@ -461,7 +490,7 @@ function CustomerWorkspace() {
                             <strong>{slot === "first" ? "Pickup A" : "Drop-off B"}</strong>
                             <small>
                               {(slot === "first" ? firstCorner : secondCorner)
-                                ? "Selected · click to edit"
+                                ? "Selected · drag marker to move"
                                 : "Select on map"}
                             </small>
                           </span>
@@ -596,14 +625,14 @@ function CustomerWorkspace() {
             <FlightMap
               chrome={false}
               hideHome={isDelivery}
-              home={firstCorner ?? (isDelivery ? ITHACA_HOME : location ?? here)}
+              home={firstCorner ?? location ?? ITHACA_HOME}
               selected={isDelivery ? undefined : geometry?.center ?? location ?? undefined}
               area={area}
               markers={
                 isDelivery
                   ? [
-                      ...(firstCorner ? [{ label: "A", point: firstCorner }] : []),
-                      ...(secondCorner ? [{ label: "B", point: secondCorner }] : []),
+                      ...(firstCorner ? [{ id: "a", label: "A", point: firstCorner }] : []),
+                      ...(secondCorner ? [{ id: "b", label: "B", point: secondCorner }] : []),
                     ]
                   : undefined
               }
@@ -615,7 +644,9 @@ function CustomerWorkspace() {
                       : undefined))
                   : geometry?.destinations
               }
+              fleet={nearbyFleet}
               onSelect={chooseLocation}
+              onMarkerMove={isDelivery ? moveDeliveryPoint : undefined}
             />
           }
         />
@@ -720,7 +751,7 @@ function spreadFleet(nearby: NearbyAircraft[]) {
         : first.vehicleId,
       src: type.src,
       label: stacked
-        ? `${group.length} aircraft`
+        ? `${first.operatorName} · ${group.length} aircraft`
         : first.own
           ? `${first.name} · Your fleet`
           : first.model
@@ -848,11 +879,17 @@ function WaitingMap({
     destinations: GeoPoint[];
   };
 }) {
+  const nearby = useQuery(api.workOrders.availableNearby, { workOrderId: order._id });
   return (
-    <JobViewer
+    <FlightMap
+      chrome={false}
+      hideHome
       home={order.location}
+      selected={order.location}
+      selectedLabel="Job"
       area={order.area}
-      destinations={jobPreviewPath(order)}
+      route={jobPreviewPath(order)}
+      fleet={spreadFleet(nearby ?? [])}
     />
   );
 }
@@ -872,20 +909,15 @@ function WaitingPanel({
   return (
     <section className="panel">
       <p className="eyebrow">{JOB_LABELS[order.kind].toUpperCase()}</p>
-      <h2>
+      <h2
+        className={order.status === "cancelled" ? undefined : "status-pulse"}
+      >
         {order.status === "cancelled"
           ? "Request cancelled"
           : "Finding a qualified operator"}
       </h2>
       <p className="muted">
         {order.description || "No additional instructions."}
-      </p>
-      <p className="selection-summary">
-        {order.kind === "flight_check"
-          ? `${order.altitudeM} m altitude · ${order.hoverSec} s hover · ${order.environment === "simulated" ? "Simulation" : "Aircraft"}`
-          : order.environment === "simulated"
-            ? "Simulation"
-            : "Aircraft"}
       </p>
       {order.status === "open" && (
         <p className="muted">
@@ -927,8 +959,19 @@ function OperatorWorkspace({ account }: { account: Account }) {
     vehicles?.filter((vehicle) =>
       order?.eligibleVehicleIds.includes(vehicle._id),
     ) ?? [];
+  const recommendedVehicle =
+    order && availableVehicles.length
+      ? pickAcceptAircraft(
+          availableVehicles.map((item) => ({
+            ...item,
+            liveBatteryPct: item.telemetry?.sample?.batteryPct,
+          })),
+          order,
+        )
+      : undefined;
   const vehicle =
     availableVehicles.find((v) => v._id === selectedVehicle) ??
+    recommendedVehicle ??
     availableVehicles[0];
   const vehicleId = vehicle?._id;
   const selectedQuote =
@@ -960,6 +1003,9 @@ function OperatorWorkspace({ account }: { account: Account }) {
   useEffect(() => {
     if (operationId) setBoardTab("active");
   }, [operationId]);
+  useEffect(() => {
+    setSelectedVehicle("");
+  }, [selectedOrder]);
   const availableCount = eligible?.length ?? 0;
   const overlayingJob = !showActive && !!order;
   const overlayingFlight = showActive && !!operationId;
@@ -1044,10 +1090,18 @@ function OperatorWorkspace({ account }: { account: Account }) {
           ) : (
             <div className="job-list">
               {eligible.map((job) => {
-                const match =
-                  vehicles?.find((item) =>
+                const candidates =
+                  vehicles?.filter((item) =>
                     job.eligibleVehicleIds.includes(item._id),
-                  ) ?? vehicles?.[0];
+                  ) ?? [];
+                const match =
+                  pickAcceptAircraft(
+                    candidates.map((item) => ({
+                      ...item,
+                      liveBatteryPct: item.telemetry?.sample?.batteryPct,
+                    })),
+                    job,
+                  ) ?? candidates[0];
                 const type = droneTypeByModel(match?.model);
                 const eta = previewAcceptedFlight({
                   kind: job.kind,
@@ -1283,17 +1337,16 @@ function OperatorWorkspace({ account }: { account: Account }) {
                 onChange={(e) => setSelectedVehicle(e.target.value)}
               >
                 {availableVehicles.map((item) => {
-                  const eta = previewAcceptedFlight({
-                    kind: order.kind,
-                    location: order.location,
-                    destinations: order.destinations,
-                    home: item.home,
-                    altitudeM: order.altitudeM,
-                    hoverSec: order.hoverSec,
-                  }).durationSec;
+                  const from = item.telemetry?.sample?.position ?? item.home;
+                  const distance = metersBetween(from, order.location);
+                  const battery = resolvedBatteryPct({
+                    batteryPct: item.batteryPct,
+                    liveBatteryPct: item.telemetry?.sample?.batteryPct,
+                    hardwareId: item.hardwareId,
+                  });
                   return (
                     <option key={item._id} value={item._id}>
-                      {item.name} · ~{formatDurationSec(eta)}
+                      {item.name} · {formatDistanceM(distance)} · {Math.round(battery)}%
                     </option>
                   );
                 })}

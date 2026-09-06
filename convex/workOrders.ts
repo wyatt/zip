@@ -5,7 +5,7 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireCustomer, requireOperator, hashSecret } from "./access";
 import { controlMode, environment, geo, jobKind, surveyArea } from "./operationsSchema";
-import { assertGeo, createFlightPlan, serializeFlightPlan, matchesRequirements, metersBetween, missionProgressPct, requiredCapabilities, WAITING_FLEET_RADIUS_M, type GeoPoint } from "../lib/operations";
+import { assertGeo, createFlightPlan, serializeFlightPlan, matchesRequirements, metersBetween, missionProgressPct, pickAcceptAircraft, requiredCapabilities, WAITING_FLEET_RADIUS_M, type GeoPoint } from "../lib/operations";
 import { physicalIntegrationAllowed } from "../lib/roles";
 import { profileLaunchSites, resolvedVehicleHome } from "./fleet";
 import { quoteWorkOrder } from "../lib/pricing";
@@ -28,6 +28,57 @@ const nearbyVehicle = v.object({
   own: v.boolean(),
   position: geo,
 });
+
+type NearbyJob = {
+  kind: Doc<"workOrders">["kind"];
+  environment: Doc<"workOrders">["environment"];
+  location: GeoPoint;
+  destinations: GeoPoint[];
+  requiredCapabilities: Doc<"workOrders">["requiredCapabilities"];
+  payloadKg: number;
+};
+
+async function nearbyMatchingVehicles(
+  ctx: QueryCtx,
+  job: NearbyJob,
+  member: { userId: Id<"users">; displayName: string; role: string },
+) {
+  const nearby: Array<{
+    vehicleId: Doc<"vehicles">["_id"];
+    name: string;
+    model: string | null;
+    operatorName: string;
+    environment: Doc<"vehicles">["environment"];
+    own: boolean;
+    position: GeoPoint;
+  }> = [];
+  const seen = new Set<string>();
+  async function addVehicle(vehicle: Doc<"vehicles">, own: boolean) {
+    if (seen.has(vehicle._id) || !vehicle.available || vehicle.activeOperationId) return;
+    if (metersBetween(vehicle.home, job.location) > Math.min(WAITING_FLEET_RADIUS_M, vehicle.maxRadiusM)) return;
+    const profile = await ctx.db.query("operatorProfiles").withIndex("by_user", q => q.eq("userId", vehicle.operatorId)).unique();
+    const operator = own ? member : await ctx.db.query("members").withIndex("by_user", q => q.eq("userId", vehicle.operatorId)).unique();
+    if (!profile || !operator) return;
+    if (!matchesRequirements({ ...job, required: job.requiredCapabilities }, profile, {
+      ...vehicle,
+      integrationApproved: physicalIntegrationAllowed(vehicle.integrationApproved, operator.role),
+    })) return;
+    if (job.destinations.some(point => metersBetween(vehicle.home, point) > vehicle.maxRadiusM)) return;
+    seen.add(vehicle._id);
+    nearby.push({
+      vehicleId: vehicle._id,
+      name: vehicle.name,
+      model: vehicle.model ?? null,
+      operatorName: operator.displayName,
+      environment: vehicle.environment,
+      own,
+      position: profile.base,
+    });
+  }
+  for (const vehicle of await ctx.db.query("vehicles").withIndex("by_operator", q => q.eq("operatorId", member.userId)).take(100)) await addVehicle(vehicle, true);
+  for (const vehicle of await ctx.db.query("vehicles").withIndex("by_available", q => q.eq("available", true)).take(200)) await addVehicle(vehicle, vehicle.operatorId === member.userId);
+  return nearby;
+}
 
 export const mine = query({ args: {}, handler: async ctx => {
   const member = await requireCustomer(ctx);
@@ -81,32 +132,34 @@ export const submit = mutation({ args: { title: v.string(), description: v.strin
   return ctx.db.insert("workOrders", { ...args, location, destinations, title, description, customerId: member.userId, requiredCapabilities: requiredCapabilities(args.kind), status: "open", updatedAt: Date.now() });
 } });
 export const availableNearby = query({
-  args: { workOrderId: v.id("workOrders") },
+  args: {
+    workOrderId: v.optional(v.id("workOrders")),
+    kind: v.optional(jobKind),
+    location: v.optional(geo),
+    destinations: v.optional(v.array(geo)),
+    payloadKg: v.optional(v.number()),
+    environment: v.optional(environment),
+  },
   returns: v.array(nearbyVehicle),
-  handler: async (ctx, { workOrderId }) => {
+  handler: async (ctx, args) => {
     const member = await requireCustomer(ctx);
-    const order = await ctx.db.get(workOrderId);
-    if (!order || order.customerId !== member.userId || order.status !== "open") return [];
-    const job = order;
-    const nearby: Array<{ vehicleId: Doc<"vehicles">["_id"]; name: string; model: string | null; operatorName: string; environment: Doc<"vehicles">["environment"]; own: boolean; position: Doc<"vehicles">["home"] }> = [];
-    const seen = new Set<string>();
-    async function addVehicle(vehicle: Doc<"vehicles">, own: boolean) {
-      if (seen.has(vehicle._id) || !vehicle.available || vehicle.activeOperationId) return;
-      if (metersBetween(vehicle.home, job.location) > Math.min(WAITING_FLEET_RADIUS_M, vehicle.maxRadiusM)) return;
-      const profile = await ctx.db.query("operatorProfiles").withIndex("by_user", q => q.eq("userId", vehicle.operatorId)).unique();
-      const operator = own ? member : await ctx.db.query("members").withIndex("by_user", q => q.eq("userId", vehicle.operatorId)).unique();
-      if (!profile || !operator) return;
-      if (!matchesRequirements({ ...job, required: job.requiredCapabilities }, profile, {
-        ...vehicle,
-        integrationApproved: physicalIntegrationAllowed(vehicle.integrationApproved, operator.role),
-      })) return;
-      if (job.destinations.some(point => metersBetween(vehicle.home, point) > vehicle.maxRadiusM)) return;
-      seen.add(vehicle._id);
-      nearby.push({ vehicleId: vehicle._id, name: vehicle.name, model: vehicle.model ?? null, operatorName: operator.displayName, environment: vehicle.environment, own, position: vehicle.home });
+    if (args.workOrderId) {
+      const order = await ctx.db.get(args.workOrderId);
+      if (!order || order.customerId !== member.userId || order.status !== "open") return [];
+      return nearbyMatchingVehicles(ctx, order, member);
     }
-    for (const vehicle of await ctx.db.query("vehicles").withIndex("by_operator", q => q.eq("operatorId", member.userId)).take(100)) await addVehicle(vehicle, true);
-    for (const vehicle of await ctx.db.query("vehicles").withIndex("by_available", q => q.eq("available", true)).take(200)) await addVehicle(vehicle, vehicle.operatorId === member.userId);
-    return nearby;
+    if (!args.kind || !args.location) return [];
+    assertGeo(args.location);
+    const destinations = args.destinations ?? [];
+    destinations.forEach(assertGeo);
+    return nearbyMatchingVehicles(ctx, {
+      kind: args.kind,
+      environment: args.environment ?? "aircraft",
+      location: args.location,
+      destinations,
+      requiredCapabilities: requiredCapabilities(args.kind),
+      payloadKg: args.payloadKg ?? 0,
+    }, member);
   },
 });
 export const eligible = query({ args: {}, handler: async ctx => {
@@ -118,16 +171,13 @@ export const eligible = query({ args: {}, handler: async ctx => {
   return orders.flatMap(order => {
     const eligibleVehicles = vehicles.filter(vehicle => matchesRequirements({ ...order, required: order.requiredCapabilities }, profile, { ...vehicle, integrationApproved: physicalIntegrationAllowed(vehicle.integrationApproved, member.role) }));
     if (!eligibleVehicles.length) return [];
-    const nearest = eligibleVehicles.reduce((best, vehicle) => {
-      const home = resolvedVehicleHome(sites, vehicle);
-      const bestHome = resolvedVehicleHome(sites, best);
-      return metersBetween(home, order.location) < metersBetween(bestHome, order.location) ? vehicle : best;
-    });
+    const ranked = eligibleVehicles.map(vehicle => ({ ...vehicle, home: resolvedVehicleHome(sites, vehicle) }));
+    const nearest = pickAcceptAircraft(ranked, order) ?? ranked[0]!;
     const market = {
       openNearby: orders.filter(other => metersBetween(other.location, order.location) <= WAITING_FLEET_RADIUS_M).length,
       idleNearby: idle.filter(vehicle => !vehicle.activeOperationId && metersBetween(vehicle.home, order.location) <= WAITING_FLEET_RADIUS_M).length,
     };
-    const quote = quoteWorkOrder(order, resolvedVehicleHome(sites, nearest), market);
+    const quote = quoteWorkOrder(order, nearest.home, market);
     return [{ ...order, eligibleVehicleIds: eligibleVehicles.map(v => v._id), quote, market }];
   });
 } });

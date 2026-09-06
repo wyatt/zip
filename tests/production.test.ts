@@ -3,7 +3,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import schema from "../convex/schema";
 import { api, internal } from "../convex/_generated/api";
 import { hashSecret } from "../convex/access";
-import { createFlightPlan, deliveryEndpoints, matchesRequirements, missionProgressPct, preflightProblems, previewAcceptedFlight, requiredCapabilities, validateSample, type AircraftSample, type Capability } from "../lib/operations";
+import { createFlightPlan, deliveryEndpoints, matchesRequirements, missionProgressPct, pickAcceptAircraft, preflightProblems, previewAcceptedFlight, requiredCapabilities, SEEDED_VEHICLE_BATTERY_PCT, validateSample, type AircraftSample, type Capability } from "../lib/operations";
 import { regionalMissionConfig, syntheticRegionalPlan } from "../lib/regional-plan";
 
 const modules = import.meta.glob("../convex/**/*.ts");
@@ -170,6 +170,14 @@ test("matching requires qualifications, capability, and service coverage", () =>
   expect(matchesRequirements(order, operator, { ...vehicle, integrationApproved: false })).toBe(true);
   expect(matchesRequirements(order, { ...operator, base: { lat: 0, lon: 0 } }, vehicle)).toBe(false);
 });
+test("acceptance prefers the nearest low-battery aircraft that can finish the job", () => {
+  const job = { kind: "inspection" as const, location: home, destinations: [home], altitudeM: 30, hoverSec: 10 };
+  const farFull = { id: "far", home: { lat: home.lat + 0.02, lon: home.lon }, maxRadiusM: 8000, batteryPct: 55, hardwareId: "far" };
+  const nearLow = { id: "near-low", home: { lat: home.lat + 0.0002, lon: home.lon }, maxRadiusM: 8000, batteryPct: 52, hardwareId: "wyatt-gsh-mini" };
+  const nearHigh = { id: "near-high", home: { lat: home.lat + 0.0003, lon: home.lon }, maxRadiusM: 8000, batteryPct: 94, hardwareId: "wyatt-gsh-cargo" };
+  const empty = { id: "empty", home, maxRadiusM: 8000, batteryPct: 8, hardwareId: "low" };
+  expect(pickAcceptAircraft([farFull, nearHigh, nearLow, empty], job)?.id).toBe("near-low");
+});
 test("an operator can fly multiple jobs at once when each has its own aircraft", async () => {
   const f = await fixture();
   const secondVehicleId = await f.operator.mutation(api.fleet.register, { name: "Second aircraft", hardwareId: "test-aircraft-2", environment: "simulated", capabilities, maxPayloadKg: 0, launchSiteName: "Home", maxRadiusM: 100 });
@@ -226,18 +234,33 @@ test("same fleet token can reclaim a silent session", async () => {
   const next = await f.t.mutation(api.agentLink.open, { token, vehicleId: f.vehicleId, instanceId: "reclaim-instance-123", hardwareId: "test-aircraft", environment: "simulated", capabilities });
   expect(next).not.toBe(f.sessionId);
 });
-test("telemetry with a newer sequence but equal timestamp is ignored", async () => {
+test("telemetry with a newer sequence is stored even when the source timestamp did not advance", async () => {
   const f = await readyFixture();
   vi.setSystemTime(Date.now() + 5);
   const now = Date.now();
   await f.t.mutation(api.agentLink.publish, { token, sessionId: f.sessionId, sample: { ...sample(2), capturedAt: now } });
-  await f.t.mutation(api.agentLink.publish, { token, sessionId: f.sessionId, sample: { ...sample(3), capturedAt: now } });
+  await f.t.mutation(api.agentLink.publish, { token, sessionId: f.sessionId, sample: { ...sample(3), capturedAt: now - 20, controlOwner: "autonomy" } });
   const telemetry = await f.t.run(ctx => ctx.db.query("vehicleTelemetry").withIndex("by_vehicle", q => q.eq("vehicleId", f.vehicleId)).unique());
-  expect(telemetry?.sample.sequence).toBe(2);
-  vi.setSystemTime(now + 1);
+  expect(telemetry?.sample.sequence).toBe(3);
+  expect(telemetry?.sample.controlOwner).toBe("autonomy");
   await f.t.mutation(api.agentLink.publish, { token, sessionId: f.sessionId, sample: { ...sample(3), capturedAt: now + 1 } });
   const next = await f.t.run(ctx => ctx.db.query("vehicleTelemetry").withIndex("by_vehicle", q => q.eq("vehicleId", f.vehicleId)).unique());
   expect(next?.sample.sequence).toBe(3);
+});
+test("start acknowledge accepts a newer owner sample whose source time lags the previous receive", async () => {
+  const f = await readyFixture();
+  const commandId = await f.operator.mutation(api.operations.command, { operationId: f.operationId, kind: "start", idempotencyKey: "owner-lag-check" });
+  await f.t.mutation(api.agentLink.claim, { token, sessionId: f.sessionId, commandId });
+  const previous = await f.t.run(ctx => ctx.db.query("vehicleTelemetry").withIndex("by_vehicle", q => q.eq("vehicleId", f.vehicleId)).unique());
+  await f.t.mutation(api.agentLink.publish, {
+    token,
+    sessionId: f.sessionId,
+    sample: { ...sample(previous!.sample.sequence + 1), capturedAt: previous!.receivedAt - 40, controlOwner: "autonomy" },
+  });
+  await f.t.mutation(api.agentLink.acknowledge, { token, sessionId: f.sessionId, commandId, accepted: true, owner: "autonomy" });
+  const details = await f.operator.query(api.operations.details, { operationId: f.operationId });
+  expect(details.operation.state).toBe("active");
+  expect(details.operation.controlOwner).toBe("autonomy");
 });
 test("start rechecks fresh preflight, expires, and cannot be claimed twice", async () => {
   const f = await readyFixture();
@@ -466,6 +489,7 @@ test("Goldwin Smith Hall base and aircraft attach to an existing operator", asyn
   const fleet = await f.operator.query(api.fleet.mine, {});
   const goldwin = fleet.filter(vehicle => vehicle.launchSiteName === "Goldwin Smith Hall");
   expect(goldwin.map(vehicle => vehicle.name).sort()).toEqual(["Arts Quad", "Ezra Cargo", "McGraw Inspector", "Smith Scout"]);
+  expect(Object.fromEntries(goldwin.map(vehicle => [vehicle.hardwareId, vehicle.batteryPct]))).toEqual(SEEDED_VEHICLE_BATTERY_PCT);
 });
 
 test("seeded DC and Ithaca aircraft appear while a matching job is waiting", async () => {
@@ -505,4 +529,16 @@ test("seeded DC and Ithaca aircraft appear while a matching job is waiting", asy
   expect(searchNearby.length).toBeGreaterThan(0);
   expect(searchNearby.every(vehicle => vehicle.model !== "Delivery Drone" && vehicle.model !== "Long-Range Drone" && vehicle.model !== "High-Speed / FPV Drone")).toBe(true);
   await expect(f.stranger.query(api.workOrders.availableNearby, { workOrderId: orderId })).resolves.toEqual([]);
+  const preview = await f.customer.query(api.workOrders.availableNearby, {
+    kind: "deliver",
+    location: ithaca,
+    destinations: [ithacaDrop],
+    payloadKg: 0,
+    environment: "aircraft",
+  });
+  expect(preview.length).toBeGreaterThan(0);
+  expect(preview.every(vehicle => vehicle.model === "Delivery Drone")).toBe(true);
+  const bases = new Set(preview.map(vehicle => `${vehicle.position.lat},${vehicle.position.lon}`));
+  expect(bases.size).toBeGreaterThan(0);
+  expect(bases.size).toBeLessThanOrEqual(preview.length);
 });

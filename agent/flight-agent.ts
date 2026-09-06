@@ -29,6 +29,7 @@ async function connectVehicle(client: ConvexClient, token: string, instanceId: s
     environment: config.environment,
     capabilities: config.capabilities,
     model: config.name,
+    batteryPct: config.batteryPct,
   });
   demo.register(adapter);
   const identity = await adapter.connect();
@@ -71,6 +72,12 @@ async function connectVehicle(client: ConvexClient, token: string, instanceId: s
       }
     });
     return publishChain;
+  }
+  async function flushPublish(sample?: AircraftSample) {
+    if (sample && sample.sequence > (latestSample?.sequence ?? -1)) latestSample = sample;
+    await publishChain;
+    if (!latestSample || latestSample.sequence <= observedSequence || shuttingDown || isShuttingDown()) return;
+    await enqueuePublish(latestSample);
   }
   await enqueuePublish(latestSample);
   async function failLocally(reason: string) {
@@ -160,7 +167,7 @@ async function connectVehicle(client: ConvexClient, token: string, instanceId: s
             if (Date.now() >= context.expiresAt || controller.signal.aborted) throw new Error("Aircraft did not confirm control ownership before the deadline.");
             await delay(50, undefined, { signal: controller.signal });
           }
-          await enqueuePublish(latestSample);
+          await flushPublish(latestSample);
           if (claimed.kind === "land") await executeAdapterCommand(context, command => adapter.land(command));
           else if (claimed.kind === "hold") await executeAdapterCommand(context, command => adapter.stop(command));
           else if (claimed.kind === "return") {
@@ -168,6 +175,8 @@ async function connectVehicle(client: ConvexClient, token: string, instanceId: s
             const sample = await adapter.getTelemetry();
             await executeAdapterCommand(context, command => adapter.goTo!(claimed.plan.home, Math.max(2, sample.altitudeM ?? 2), command));
           }
+          await flushPublish(latestSample);
+          if (!latestSample || latestSample.controlOwner !== owner) throw new Error("Aircraft has not confirmed the requested control owner.");
           await client.mutation(api.agentLink.acknowledge, { ...sessionArgs(), commandId: command._id, accepted: true, owner });
           contact();
           if (claimed.kind === "start" && claimed.plan.mode === "autonomous") {

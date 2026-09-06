@@ -5,15 +5,16 @@ const intersects=(a,b)=>a.west<b.east&&a.east>b.west&&a.south<b.north&&a.north>b
 
 export async function createRegionalReconstruction(regionUrl,manifest,plan,onProgress=()=>{}){
   if(plan.mode!=='inspection'||!plan.polygon)return null;
-  const bounds=polygonBounds(plan.polygon),resolution=Math.max(5,Math.ceil(Math.max(bounds.east-bounds.west,bounds.north-bounds.south)/1200)),
+  const bounds=polygonBounds(plan.polygon),span=Math.max(bounds.east-bounds.west,bounds.north-bounds.south),resolution=Math.max(1,Math.ceil(span/1200)),
     cols=Math.ceil((bounds.east-bounds.west)/resolution),rows=Math.ceil((bounds.north-bounds.south)/resolution),count=rows*cols;
   if(count>1_500_000)throw new Error('Inspection mosaic exceeds the browser grid limit; increase track spacing or use a smaller polygon.');
   const url=regionUrl.endsWith('/')?regionUrl:`${regionUrl}/`,tiles=manifest.tiles.filter(tile=>intersects(bounds,{west:tile.west,east:tile.west+tile.size,south:tile.north-tile.size,north:tile.north}));
   const terrain=new Map(),source=document.createElement('canvas');source.width=cols;source.height=rows;const context=source.getContext('2d',{willReadFrequently:true});
   let completed=0;
   const queue=[...tiles],load=async()=>{while(queue.length){const tile=queue.shift(),[data,response]=await Promise.all([
-    fetchTerrain(`${url}tiles/${tile.id}/5/terrain.bin.gz`),fetch(`${url}tiles/${tile.id}/aerial-5m.jpg`)]);
-    if(!response.ok)throw new Error(`Mosaic imagery: HTTP ${response.status}`);const bitmap=await createImageBitmap(await response.blob());
+    fetchTerrain(`${url}tiles/${tile.id}/5/terrain.bin.gz`),fetch(`${url}tiles/${tile.id}/aerial.jpg`).then(async response=>{
+      if(response.ok)return response;const fallback=await fetch(`${url}tiles/${tile.id}/aerial-5m.jpg`);if(!fallback.ok)throw new Error(`Mosaic imagery: HTTP ${fallback.status}`);return fallback;})]);
+    const bitmap=await createImageBitmap(await response.blob());
     const x=(tile.west-bounds.west)/resolution,y=(bounds.north-tile.north)/resolution,size=tile.size/resolution;
     context.drawImage(bitmap,x,y,size,size);bitmap.close();terrain.set(tile.id,{tile,data});completed++;onProgress({stage:'mosaic',completed,total:tiles.length});}};
   await Promise.all(Array.from({length:Math.min(6,queue.length)},load));

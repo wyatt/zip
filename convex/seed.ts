@@ -6,6 +6,7 @@ import { assignLaunchSiteIds } from "../lib/launch-sites";
 import { BASE_CAPABILITIES, capabilitiesFromTags, droneTypeById, type OptionalTag } from "../lib/aircraft";
 import type { Capability, Environment, GeoPoint, JobKind } from "../lib/operations";
 import { GOLDWIN_SMITH_HALL, ITHACA_HOME } from "../lib/ithaca";
+import { seededBatteryPct } from "../lib/operations";
 import { syncFleetLaunchSites } from "./fleet";
 
 const QUALIFICATIONS: JobKind[] = ["flight_check", "search", "inspection", "deliver"];
@@ -158,6 +159,7 @@ async function ensureOperator(ctx: MutationCtx, spec: SeedOperator) {
       maxRadiusM: 8000,
       available: true,
       integrationApproved: true,
+      batteryPct: seededBatteryPct(aircraft.hardwareId),
     });
     vehicles += 1;
   }
@@ -197,7 +199,11 @@ async function insertAircraft(ctx: MutationCtx, operatorId: Id<"users">, aircraf
   const tags = [...type.tags, ...(aircraft.extra ?? [])];
   const capabilities: Capability[] = capabilitiesFromTags(tags);
   const already = await ctx.db.query("vehicles").withIndex("by_hardwareId", q => q.eq("hardwareId", aircraft.hardwareId)).unique();
-  if (already) return false;
+  const batteryPct = seededBatteryPct(aircraft.hardwareId);
+  if (already) {
+    if (already.batteryPct !== batteryPct) await ctx.db.patch(already._id, { batteryPct });
+    return false;
+  }
   await ctx.db.insert("vehicles", {
     operatorId,
     name: aircraft.name,
@@ -213,6 +219,7 @@ async function insertAircraft(ctx: MutationCtx, operatorId: Id<"users">, aircraf
     maxRadiusM: 8000,
     available: true,
     integrationApproved: true,
+    batteryPct,
   });
   return true;
 }

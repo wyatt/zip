@@ -4,7 +4,7 @@ import type { AircraftSample, GeoPoint, RoutePoint } from "@/lib/operations";
 import type { SurveyArea } from "@/lib/areas";
 import { toLocal } from "@/lib/geo-local";
 import { ITHACA_REGION_API, ITHACA_SIZE_M } from "@/lib/ithaca";
-import { createRegionalTerrain, loadRegionManifest, tilesCovering, unionTileBounds } from "@/lib/ithaca-map/regional-terrain";
+import { createRegionalTerrain, loadRegionManifest } from "@/lib/ithaca-map/regional-terrain";
 
 type ViewMode = "top" | "orbit";
 
@@ -156,7 +156,6 @@ export function MissionScene({
         meta,
         baseline,
         requestRender,
-        detailLevel: 5,
       });
       if (disposed) { regional.dispose(); return; }
 
@@ -265,7 +264,19 @@ export function MissionScene({
           height: Math.max(420, north - south),
         };
       };
-      const focus = unionTileBounds(tilesCovering(meta.tiles, jobBounds()));
+      const syncPath = () => {
+        const pts = jobPoints();
+        if (area) {
+          const nw = toLocal(origin, area.northWest), se = toLocal(origin, area.southEast);
+          for (let east = nw.east; east <= se.east; east += 20) {
+            for (let north = se.north; north <= nw.north; north += 20) pts.push({ east, north });
+          }
+        }
+        regional!.setPath(pts);
+      };
+      const job = jobBounds();
+      const focus = { west: job.west, east: job.east, south: job.south, north: job.north };
+      syncPath();
       const zoomToFit = (widthM: number, heightM: number, pad: number) => Math.min(
         orbit.maxZoom,
         Math.max(
@@ -348,6 +359,7 @@ export function MissionScene({
         const pathKey = pts.map((p) => `${p.lat.toFixed(6)},${p.lon.toFixed(6)},${p.elev?.toFixed(1) ?? ""}`).join(";");
         if (pathKey !== lastPathKey) {
           lastPathKey = pathKey;
+          syncPath();
           if (pts.length > 1) {
             const geometry = new lineGeomMod.LineGeometry();
             geometry.setPositions(pts.flatMap((p) => {

@@ -43,10 +43,10 @@ export class DemoDrone implements DroneAdapter {
     hardwareId: string,
     home: GeoPoint,
     private readonly regionBaseUrl: string,
-    private readonly provisioned: { environment: Environment; capabilities: Capability[]; model?: string },
+    private readonly provisioned: { environment: Environment; capabilities: Capability[]; model?: string; batteryPct?: number },
   ) {
     this.hardwareId = hardwareId;
-    this.inner = new SimulatedDrone(hardwareId, home);
+    this.inner = new SimulatedDrone(hardwareId, home, provisioned.batteryPct);
     this.origin = home;
     this.cameraBase = regionBaseUrl.replace(/\/terrain\/?$/, "");
   }
