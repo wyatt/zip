@@ -60,7 +60,7 @@ export async function createLandscape(container, { dataUrl, onChange = () => {},
   const camera = new THREE.OrthographicCamera(-worldSpan, worldSpan, worldSpan, -worldSpan, .1, Math.max(3000,worldSpan*3));
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = false;
-  controls.minZoom = .4; controls.maxZoom = 12;
+  controls.minZoom = .4; controls.maxZoom = 64;
   controls.maxPolarAngle = Math.PI*.485;
   controls.screenSpacePanning = true;
   controls.listenToKeyEvents(container);
