@@ -21,9 +21,9 @@ async function fixture() {
   await adapter.transferControl("computer", context());
   const stop = vi.spyOn(adapter, "stop");
   const land = vi.spyOn(adapter, "land");
-  const gateway = await startControlGateway({ adapter, port: 0, allowedOrigin: "http://zip.test", owns: () => true, redeem: async () => ({ operationId: "test-flight", generation: 1, expiresAt: Date.now() + 30000, plan }) });
+  const gateway = await startControlGateway({ adapterFor: () => adapter, port: 0, allowedOrigin: "http://iris.test", owns: () => true, redeem: async () => ({ operationId: "test-flight", vehicleId: "test-aircraft", generation: 1, expiresAt: Date.now() + 30000, plan }) });
   cleanup.push(() => gateway.close());
-  const ws = new WebSocket(`ws://127.0.0.1:${gateway.port}/control`, { origin: "http://zip.test" });
+  const ws = new WebSocket(`ws://127.0.0.1:${gateway.port}/control`, { origin: "http://iris.test" });
   cleanup.push(async () => { if (ws.readyState === WebSocket.CLOSED) return; const closed = once(ws, "close"); ws.close(); await closed; });
   const messages: { type: string; sequence?: number; reason?: string }[] = [];
   ws.on("message", raw => messages.push(JSON.parse(String(raw))));

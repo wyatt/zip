@@ -7,7 +7,7 @@ import { point, snapshot, task } from "./schema";
 import { planRoute, STEP_NAMES } from "../lib/flight";
 import { taskRoute, taskSteps, validateTask } from "../lib/tasks";
 
-const identity = "zip-sim-01";
+const identity = "iris-sim-01";
 async function event(ctx: MutationCtx, missionId: Id<"missions">, message: string) {
   await ctx.db.insert("events", { missionId, message, timestamp: Date.now() });
 }
@@ -33,7 +33,7 @@ export const submit = mutation({ args: { requester: v.string(), description: v.s
 } });
 export const seed = mutation({ args: {}, handler: async ctx => {
   const drone = await ctx.db.query("drones").withIndex("by_identity", q => q.eq("identity", identity)).unique();
-  return drone?._id ?? ctx.db.insert("drones", { identity, name: "zip simulator 01", simulated: true, capabilities: ["generic job", "supervised autonomy"], available: true, heartbeatAt: 0 });
+  return drone?._id ?? ctx.db.insert("drones", { identity, name: "iris simulator 01", simulated: true, capabilities: ["generic job", "supervised autonomy"], available: true, heartbeatAt: 0 });
 } });
 export const accept = mutation({ args: { jobId: v.id("jobs"), mode: v.literal("supervised") }, handler: async (ctx, { jobId, mode }) => {
   const existing = await ctx.db.query("missions").withIndex("by_job", q => q.eq("jobId", jobId)).unique();

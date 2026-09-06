@@ -14,7 +14,7 @@ if (existing.stdout.trim()) {
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const privatePem = privateKey.export({ type: "pkcs8", format: "pem" }).toString().trimEnd().replace(/\n/g, " ");
 const jwks = JSON.stringify({ keys: [{ ...publicKey.export({ format: "jwk" }), use: "sig", alg: "RS256" }] });
-const dir = mkdtempSync(join(tmpdir(), "zip-auth-"));
+const dir = mkdtempSync(join(tmpdir(), "iris-auth-"));
 const file = join(dir, "auth.env");
 try {
   writeFileSync(file, `JWT_PRIVATE_KEY="${privatePem}"\nJWKS=${jwks}\n`, { mode: 0o600 });

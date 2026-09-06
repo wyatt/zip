@@ -8,9 +8,16 @@ import { aircraftSample, capability, controlOwner, environment } from "./operati
 import { preflightProblems, SESSION_LEASE_MS, stepSatisfied, validateSample } from "../lib/operations";
 
 const sessionArgs = { token: v.string(), sessionId: v.id("agentSessions") };
-export const configuration = query({ args: { token: v.string() }, handler: async (ctx, { token }) => {
-  const { vehicle } = await requireCredential(ctx, token);
-  return { vehicleId: vehicle._id, hardwareId: vehicle.hardwareId, environment: vehicle.environment, home: vehicle.home, capabilities: vehicle.capabilities };
+export const fleet = query({ args: { token: v.string() }, handler: async (ctx, { token }) => {
+  const { operatorId } = await requireCredential(ctx, token);
+  const vehicles = await ctx.db.query("vehicles").withIndex("by_operator", q => q.eq("operatorId", operatorId)).take(100);
+  return vehicles.map(vehicle => ({ vehicleId: vehicle._id, name: vehicle.name, hardwareId: vehicle.hardwareId, environment: vehicle.environment, home: vehicle.home, capabilities: vehicle.capabilities }));
+} });
+export const pulse = mutation({ args: { token: v.string() }, handler: async (ctx, { token }) => {
+  const { credential } = await requireCredential(ctx, token);
+  const lastSeenAt = Date.now();
+  await ctx.db.patch(credential._id, { lastSeenAt });
+  return { lastSeenAt };
 } });
 async function recordEvent(ctx: MutationCtx, operationId: Id<"operations">, kind: string, message: string, commandId?: Id<"controlCommands">) {
   await ctx.db.insert("operationEvents", { operationId, actor: "flight-agent", kind, message, timestamp: Date.now(), ...(commandId ? { commandId } : {}) });
@@ -24,8 +31,10 @@ async function uncertainOperation(ctx: MutationCtx, operation: Doc<"operations">
   await recordEvent(ctx, operation._id, "attention", reason);
 }
 
-export const open = mutation({ args: { token: v.string(), instanceId: v.string(), hardwareId: v.string(), environment, capabilities: v.array(capability) }, handler: async (ctx, args) => {
-  const { credential, vehicle } = await requireCredential(ctx, args.token);
+export const open = mutation({ args: { token: v.string(), vehicleId: v.id("vehicles"), instanceId: v.string(), hardwareId: v.string(), environment, capabilities: v.array(capability) }, handler: async (ctx, args) => {
+  const { credential, operatorId } = await requireCredential(ctx, args.token);
+  const vehicle = await ctx.db.get(args.vehicleId);
+  if (!vehicle || vehicle.operatorId !== operatorId) throw new Error("Aircraft not found.");
   if (!/^[a-zA-Z0-9_-]{10,100}$/.test(args.instanceId)) throw new Error("Invalid agent instance identity.");
   if (vehicle.hardwareId !== args.hardwareId || vehicle.environment !== args.environment) throw new Error("Adapter identity does not match the provisioned aircraft.");
   if (vehicle.capabilities.some(cap => !args.capabilities.includes(cap))) throw new Error("Adapter does not support the provisioned capabilities.");

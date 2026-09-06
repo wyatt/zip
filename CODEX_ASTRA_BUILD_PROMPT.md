@@ -1,8 +1,8 @@
-# zip — closed-loop simulated drone demo
+# iris — closed-loop simulated drone demo
 
 ## 1. Objective
 
-Act as the lead product engineer for a small hackathon team. Build the smallest complete version of **zip** that proves this cycle:
+Act as the lead product engineer for a small hackathon team. Build the smallest complete version of **iris** that proves this cycle:
 
 **requester submits a job → operator accepts it and selects supervised autonomy → backend assigns a simulated drone → local agent receives the mission → operator starts it → simulated drone flies → telemetry and mission steps update → drone returns and lands → mission completes**
 
@@ -62,7 +62,7 @@ Build two focused experiences:
 
 Use `/request` and `/operator`. Show mission details inside the operator experience or use `/mission/[id]` only if a dedicated route clearly improves the demo.
 
-Use the supplied `zip` visual direction if present: lowercase wordmark, high-contrast black and white, electric-lime accent, restrained borders, strong typography, a useful map, and responsive layouts. Prioritize the operational flow over marketing content.
+Use the supplied `iris` visual direction if present: lowercase wordmark, high-contrast black and white, electric-lime accent, restrained borders, strong typography, a useful map, and responsive layouts. Prioritize the operational flow over marketing content.
 
 ## 5. System shape
 

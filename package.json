@@ -1,5 +1,5 @@
 {
-  "name": "zip-simulated-flight",
+  "name": "iris-simulated-flight",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start --hostname 127.0.0.1",
     "backend": "convex dev",
-    "agent": "tsx --env-file=.env.local --env-file-if-exists=.env.agent agent/index.ts",
+    "agent": "bun --env-file=.env.local --env-file=.env.agent agent/index.ts",
     "auth:setup": "node scripts/setup-auth.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
@@ -23,6 +23,7 @@
     "leaflet": "^1.9.4",
     "maplibre-gl": "^5.24.0",
     "next": "latest",
+    "pixelarticons": "^2.4.1",
     "react": "latest",
     "react-dom": "latest",
     "ws": "8.21.0"

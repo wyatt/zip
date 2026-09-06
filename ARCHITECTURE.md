@@ -1,13 +1,13 @@
 # Production flight operations
 
-This scope was authorized after the completed Phase 1 simulator. It supersedes the v1-only limits in CODEX_ASTRA_BUILD_PROMPT.md while retaining Convex, the separate local flight agent, the adapter boundary, and the zip visual direction.
+This scope was authorized after the completed Phase 1 simulator. It supersedes the v1-only limits in CODEX_ASTRA_BUILD_PROMPT.md while retaining Convex, the separate local flight agent, the adapter boundary, and the iris visual direction.
 
 ## Ownership
 
 - Customers own work orders and can see only their own requests and operation progress.
 - Operators register their own drones and specifications without invitation codes. Registered operators receive eligible work orders based on service area, qualifications, vehicle capabilities, and requested execution environment. Acceptance atomically reserves an operator and vehicle.
 - Convex is authoritative for accounts, aircraft registrations, assignments, immutable flight plans, command intent, control ownership, latest measured telemetry, and audit events.
-- The local flight agent is the only aircraft communication process. It authenticates with a revocable vehicle-scoped credential and acquires an expiring session. Aircraft acknowledgments, not button clicks, establish control ownership.
+- The local flight agent is the only aircraft communication process. It authenticates with a revocable operator fleet credential, then acquires an expiring session per aircraft. Aircraft acknowledgments, not button clicks, establish control ownership.
 - An adapter supplies identity, live measurements, readiness, command acknowledgment, control transfer, and local failsafe behavior. The simulator implements the same contract. No hardware protocol is assumed, and no placeholder hardware adapter reports success.
 - Stabilization and immediate link-loss handling remain with the aircraft controller and local agent. Cloud telemetry publication must not block aircraft control.
 

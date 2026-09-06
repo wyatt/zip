@@ -1,0 +1,151 @@
+.operator-retro.request-page.request-catalog {
+  height: auto;
+  min-height: calc(100dvh - var(--header-h));
+  max-width: 1560px;
+  margin: 0 auto;
+  padding: 36px 4vw 48px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.operator-retro.request-page .page-heading {
+  margin-bottom: 12px;
+}
+.operator-retro.request-page .heading-actions .primary,
+.operator-retro.request-page .heading-actions .text-button {
+  min-width: 0;
+  height: 48px;
+  padding: 0 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.operator-retro.request-page .heading-actions .text-button {
+  border: 3px solid var(--ink);
+  background: white;
+  color: var(--ink);
+  text-decoration: none;
+  font-weight: 700;
+}
+.operator-retro.request-page .panel > h2 {
+  margin-bottom: 8px;
+}
+.operator-retro.request-page form {
+  margin-top: 18px;
+}
+.mission-section {
+  width: 100%;
+  max-width: 1020px;
+  margin-top: 8px;
+}
+.mode-section {
+  width: 100%;
+  max-width: 1020px;
+  margin-top: 40px;
+  padding-top: 28px;
+  border-top: 1px solid var(--line);
+}
+.mission-section .section-title,
+.mode-section .section-title {
+  justify-content: center;
+  gap: 10px;
+}
+.mission-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+.mission-card {
+  border: 3px solid var(--ink);
+  background: white;
+  padding: 16px 14px;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+.mission-card:hover {
+  background: var(--canvas);
+}
+.mode-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+  width: 100%;
+}
+.mode-card {
+  border: 5px solid #000;
+  background-color: #fff;
+  background-image: var(--dither);
+  background-size: 72px 72px;
+  background-blend-mode: multiply;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  padding: 0;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  width: 100%;
+}
+.mode-card:hover {
+  background-color: #f3f3f3;
+}
+.mode-art {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  width: 100%;
+  background: transparent;
+  overflow: hidden;
+}
+.mode-sprite {
+  display: block;
+  width: 92%;
+  height: 92%;
+  background-image: url("/drone_modes.png");
+  background-repeat: no-repeat;
+  background-size: 300% 100%;
+  background-position: var(--mode-frame, 0) 0;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  filter: drop-shadow(0 0 10px rgba(0, 0, 0, 0.18));
+}
+.mode-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 14px 16px;
+}
+.mode-title {
+  font-size: 20px;
+  font-weight: 900;
+  letter-spacing: -0.3px;
+}
+.mode-body .muted {
+  font-size: 14px;
+  line-height: 1.45;
+}
+.operator-retro.request-page .street-toolbar {
+  border-bottom: 3px solid var(--ink);
+}
+.operator-retro.request-page .map-instruction {
+  border-top: 3px solid var(--ink);
+}
+.operator-retro.request-page .street-toolbar button,
+.operator-retro.request-page .map-instruction button {
+  border: 2px solid var(--ink);
+}
+
+@media (max-width: 1100px) {
+  .mode-grid {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 720px) {
+  .operator-retro.request-page.request-catalog {
+    padding: 26px 18px 40px;
+  }
+}

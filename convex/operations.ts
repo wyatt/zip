@@ -2,12 +2,13 @@ import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { requireMember, requireOperator, requireOperationAccess } from "./access";
+import { isCustomerRole, isOperatorRole } from "../lib/roles";
 import { commandKind } from "./operationsSchema";
 import { COMMAND_TTL_MS, preflightProblems, TELEMETRY_STALE_MS } from "../lib/operations";
 
 export const mine = query({ args: {}, handler: async ctx => {
   const member = await requireMember(ctx);
-  return member.role === "customer"
+  return isCustomerRole(member.role) && !isOperatorRole(member.role)
     ? ctx.db.query("operations").withIndex("by_customer", q => q.eq("customerId", member.userId)).order("desc").take(100)
     : ctx.db.query("operations").withIndex("by_operator", q => q.eq("operatorId", member.userId)).order("desc").take(100);
 } });

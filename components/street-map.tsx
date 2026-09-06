@@ -1,10 +1,9 @@
 "use client";
 import L from "leaflet";
-import { maplibreGL } from "@maplibre/maplibre-gl-leaflet";
 import { useEffect, useRef, useState } from "react";
 import { LAUNCH, type Point } from "@/lib/flight";
 import { fromLatLng, toLatLng, type Task } from "@/lib/tasks";
-import { cleanMapStyle } from "@/lib/map-style";
+import { addSatelliteTiles, SATELLITE_MAX_ZOOM } from "@/lib/satellite-tiles";
 
 type Props = { target: Point; task?: Task; first?: Point; route?: Point[]; position?: Point; onSelect?: (point: Point) => void; instruction?: string; state?: string };
 export default function StreetMap({ target, task, first, route, position, onSelect, instruction, state }: Props) {
@@ -19,26 +18,16 @@ export default function StreetMap({ target, task, first, route, position, onSele
   const [loaded, setLoaded] = useState(false);
   useEffect(() => { select.current = onSelect; }, [onSelect]);
   useEffect(() => {
-    const instance = L.map(container.current!, { zoomControl: false, scrollWheelZoom: true, touchZoom: true, minZoom: 13, maxZoom: 19 }).setView(toLatLng({ x: 350, y: 220 }), 16);
+    const instance = L.map(container.current!, { zoomControl: false, scrollWheelZoom: true, touchZoom: true, minZoom: 13, maxZoom: SATELLITE_MAX_ZOOM }).setView(toLatLng({ x: 350, y: 220 }), 16);
     map.current = instance;
     L.control.zoom({ position: "bottomright" }).addTo(instance);
     L.control.scale({ imperial: false, position: "bottomleft" }).addTo(instance);
-    const controller = new AbortController();
-    instance.attributionControl.addAttribution('<a href="https://openfreemap.org/">OpenFreeMap</a> · <a href="https://openmaptiles.org/">OpenMapTiles</a> · &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>');
-    void fetch("https://tiles.openfreemap.org/styles/liberty", { signal: controller.signal })
-      .then(response => { if (!response.ok) throw new Error("Map style unavailable"); return response.json(); })
-      .then(style => {
-        if (controller.signal.aborted) return;
-        const layer = maplibreGL({ style: cleanMapStyle(style), attributionControl: false }).addTo(instance);
-        const vectorMap = layer.getMaplibreMap();
-        vectorMap.on("error", () => setTileError(true));
-        vectorMap.on("idle", () => { setLoaded(true); setTileError(false); });
-      }).catch(error => { if (!controller.signal.aborted) { console.error("Map initialization failed", error); setTileError(true); } });
+    addSatelliteTiles(instance, { onLoad: () => { setLoaded(true); setTileError(false); }, onError: () => setTileError(true) });
     overlays.current = L.layerGroup().addTo(instance);
     instance.on("click", (event: L.LeafletMouseEvent) => select.current?.(fromLatLng(event.latlng.lat, event.latlng.lng)));
     const observer = new ResizeObserver(() => instance.invalidateSize());
     observer.observe(container.current!);
-    return () => { controller.abort(); observer.disconnect(); instance.remove(); map.current = null; drone.current = null; };
+    return () => { observer.disconnect(); instance.remove(); map.current = null; drone.current = null; };
   }, []);
   const geometry = JSON.stringify({ target, task, first, route });
   useEffect(() => {
@@ -49,19 +38,19 @@ export default function StreetMap({ target, task, first, route, position, onSele
     const points: Point[] = [LAUNCH];
     function pin(p: Point, label: string, lime = true) {
       points.push(p);
-      L.circleMarker(toLatLng(p), { radius: 7, color: "#11140f", weight: 2, fillColor: lime ? "#c5f429" : "#fff", fillOpacity: 1 }).bindTooltip(label, { permanent: true, direction: "right", offset: [18, 0], className: "map-pin-label" }).addTo(group);
+      L.circleMarker(toLatLng(p), { radius: 7, color: "#fff", weight: 2, fillColor: lime ? "#c45c38" : "#fff", fillOpacity: 1 }).bindTooltip(label, { permanent: true, direction: "right", offset: [18, 0], className: "map-pin-label" }).addTo(group);
     }
     pin(LAUNCH, "Launch", false);
     if (data.task?.type === "deliver") { pin(data.task.pickup, "Pickup"); pin(data.task.dropoff, "Delivery"); }
     else if (data.task) {
       const { northWest, southEast } = data.task.region;
       points.push(northWest, southEast);
-      L.rectangle([toLatLng(northWest), toLatLng(southEast)], { color: "#718d0b", weight: 1, dashArray: "4 5", fillColor: "#c5f429", fillOpacity: .08 }).addTo(group);
+      L.rectangle([toLatLng(northWest), toLatLng(southEast)], { color: "#fff", weight: 1, dashArray: "4 5", fillColor: "#c45c38", fillOpacity: .18 }).addTo(group);
     } else if (data.first) pin(data.first, "First point");
     else if (!select.current) pin(data.target, "Job");
     if (data.route && showRoute) {
       L.polyline(data.route.map(toLatLng), { color: "#fff", weight: 4, opacity: .8, interactive: false }).addTo(group);
-      L.polyline(data.route.map(toLatLng), { color: "#3977d5", weight: 2, opacity: .8, interactive: false }).addTo(group);
+      L.polyline(data.route.map(toLatLng), { color: "#ffd18a", weight: 2, opacity: .95, interactive: false }).addTo(group);
     }
     if (data.route) points.push(...data.route);
     bounds.current = L.latLngBounds(points.map(toLatLng)).pad(.3);

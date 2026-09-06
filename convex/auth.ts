@@ -15,7 +15,7 @@ const reset = Resend({
     const response = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: { Authorization: `Bearer ${process.env.AUTH_RESEND_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ from: process.env.AUTH_EMAIL_FROM, to: [identifier], subject: "Reset your zip password", text: `Your password reset code is ${token}. It expires in 15 minutes. If you did not request this, ignore this email.` }),
+      body: JSON.stringify({ from: process.env.AUTH_EMAIL_FROM, to: [identifier], subject: "Reset your iris password", text: `Your password reset code is ${token}. It expires in 15 minutes. If you did not request this, ignore this email.` }),
     });
     if (!response.ok) throw new Error("Could not deliver the recovery email. Try again later.");
   },

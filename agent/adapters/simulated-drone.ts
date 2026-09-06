@@ -24,7 +24,7 @@ export class SimulatedDrone implements DroneAdapter {
       this.lastTick = Date.now();
       this.timer = setInterval(() => this.tick(), 50);
     }
-    return { hardwareId: this.hardwareId, model: "zip local simulator", environment: "simulated", firmware: "2.0", capabilities: ["takeoff", "hover", "land", "position", "autonomous", "manual_remote", "manual_computer"] };
+    return { hardwareId: this.hardwareId, model: "iris local simulator", environment: "simulated", firmware: "2.0", capabilities: ["takeoff", "hover", "land", "position", "autonomous", "manual_remote", "manual_computer"] };
   }
   async disconnect() {
     if (this.sample.airborne || this.sample.armed) throw new Error("Cannot disconnect a flying simulator. Land or transfer control first.");

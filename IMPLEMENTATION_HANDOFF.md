@@ -1,4 +1,4 @@
-# zip — implementation handoff
+# iris — implementation handoff
 
 Updated September 5, 2026. Development was wrapped up at the user's request. This document describes the current worktree, including what functions now and what remains unfinished. No further testing is being started as part of this handoff.
 
@@ -16,9 +16,9 @@ This is an integration foundation, not a verified physical-drone controller or a
 | --- | --- |
 | `/request` | Sign up/sign in; submit requests; view the customer's own requests, assignment, plan progress, telemetry, and available camera stream; cancel an unassigned request; restore operation selection after refresh. |
 | `/operator` | Register a drone to begin; see matching jobs; choose an eligible aircraft, autonomous/manual mode, and remote/computer takeover method; accept a job; start and supervise the assigned operation; view operation history and events. |
-| `/fleet` | Register drones and specifications; see the operator's own fleet; toggle accepting jobs; issue, rotate, hide, copy, and revoke vehicle-scoped agent credentials. |
+| `/fleet` | Register drones and specifications; see the operator's own fleet; toggle accepting jobs; issue, rotate, hide, copy, and revoke a single operator fleet agent token. |
 
-The UI retains the zip wordmark, lime accent, restrained black/white styling, Lato typography, geographic map, and responsive layouts. Navigation separates customer, operator, and aircraft surfaces.
+The UI retains the iris wordmark, lime accent, restrained black/white styling, Lato typography, geographic map, and responsive layouts. Navigation separates customer, operator, and aircraft surfaces.
 
 ### Self-service operator and drone registration
 
@@ -164,7 +164,7 @@ No camera is simulated, no physical stream was tested, and no media relay/transc
 
 - Convex Auth password sign-up, sign-in, sign-out, and authenticated sessions.
 - Customer record isolation and operator ownership checks enforced in backend functions.
-- Private operator/vehicle agent credentials stored as hashes, with expiry, rotation, and revocation.
+- Private operator fleet agent credentials stored as hashes, with expiry, rotation, and revocation.
 - Active session ownership checks and rejection of competing agents.
 - Password recovery provider implementation using Resend; requires deployment configuration and has not been verified by sending real email.
 - Authentication key setup script creates signing keys in Convex and preserves existing keys without printing secrets.
@@ -179,7 +179,7 @@ npm run auth:setup    # once, with backend running
 npm run dev          # separate terminal
 ```
 
-Create an account, register a local simulator in `/fleet`, save its issued credential as `ZIP_AGENT_TOKEN` in private `.env.agent`, and start the agent in another terminal:
+Create an account, register a local simulator in `/fleet`, save the issued fleet credential as `IRIS_AGENT_TOKEN` in private `.env.agent`, and start the agent in another terminal:
 
 ```sh
 npm run agent

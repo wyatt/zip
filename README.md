@@ -1,4 +1,4 @@
-# zip — flight operations
+# iris — flight operations
 
 Authenticated customer requests, self-registered operators, capability-based dispatch, server-generated flight plans, and a separate local flight agent. Convex owns operational data. The local agent owns aircraft communication and executes plans through `DroneAdapter`.
 
@@ -20,16 +20,16 @@ npm run auth:setup
 npm run dev
 ```
 
-Authentication setup preserves existing signing keys. It stores keys in Convex configuration and does not print private keys or save them in the repository. Open http://127.0.0.1:3000/request and create an account with a password of 12–128 characters, then finish account setup.
+Authentication setup preserves existing signing keys. It stores keys in Convex configuration and does not print private keys or save them in the repository. Open http://127.0.0.1:3000 and create an account with a password of 12–128 characters. Choose **Customer** or **Operator** when you finish setup; one account cannot be both.
 
 ### Provision operators and aircraft
 
-1. Create an account, open `/operator`, and choose **Register your drone**. No invitation or join code is required.
+1. Create an **operator** account, then choose **Register your drone**. No invitation or join code is required. Use a separate customer account to submit jobs.
 2. Enter its name, model, hardware identity, supported capabilities, payload capacity, launch coordinates, flight boundary, and service radius. Registration creates the operator profile and adds the aircraft to your fleet automatically. Physical aircraft are registered immediately; control still requires the future verified adapter.
-3. To exercise the application now, choose **Local simulator**. Its supported capabilities are fixed and clearly labeled. Save the one-time connection credential to `.env.agent` on the operator computer:
+3. To exercise the application now, choose **Local simulator**. Its supported capabilities are fixed and clearly labeled. The first registration issues a fleet agent token. Save it once to `.env.agent` on the operator computer:
 
    ```dotenv
-   ZIP_AGENT_TOKEN=YOUR_ISSUED_CREDENTIAL
+   IRIS_AGENT_TOKEN=YOUR_ISSUED_CREDENTIAL
    ```
 
 4. Start the separate local flight agent in a third terminal:
@@ -38,7 +38,7 @@ Authentication setup preserves existing signing keys. It stores keys in Convex c
    npm run agent
    ```
 
-Each credential is scoped to one vehicle and expires after 90 days. Rotation invalidates older credentials. One live agent session owns a vehicle. `.env.agent` is private and must never be committed or placed in a `NEXT_PUBLIC_` variable.
+The token is scoped to the operator, not a single aircraft. One agent process publishes telemetry and accepts control for the whole fleet. It expires after 90 days. Rotation or revocation disconnects every aircraft session. `.env.agent` is private and must never be committed or placed in a `NEXT_PUBLIC_` variable.
 
 ### Exercise the complete flow
 
@@ -62,10 +62,10 @@ For an HTTPS application, use a trusted local TLS certificate and WSS:
 
 ```dotenv
 # Agent-only configuration, in .env.agent
-ZIP_ALLOWED_ORIGIN=https://YOUR_APPLICATION_HOST
-ZIP_CONTROL_PORT=8765
-ZIP_CONTROL_TLS_CERT=/absolute/path/to/certificate.pem
-ZIP_CONTROL_TLS_KEY=/absolute/path/to/private-key.pem
+IRIS_ALLOWED_ORIGIN=https://YOUR_APPLICATION_HOST
+IRIS_CONTROL_PORT=8765
+IRIS_CONTROL_TLS_CERT=/absolute/path/to/certificate.pem
+IRIS_CONTROL_TLS_KEY=/absolute/path/to/private-key.pem
 ```
 
 Set `NEXT_PUBLIC_CONTROL_URL` in the frontend environment to the corresponding `wss://...:8765/control` endpoint. The gateway intentionally binds loopback: the operator browser and agent run on the same computer. A customer viewing remotely never receives control authority.

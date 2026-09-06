@@ -1,18 +1,18 @@
-# zip v1
+# iris v1
 
 ## Production evolution — handoff
 
 - [ ] Customer authentication, session recovery, and private work orders.
 - [x] Self-service operator/drone registration without join codes, saved specifications, basic capability/service-area matching, atomic acceptance.
 - [x] Server-generated plans; autonomous and manual control modes verified with the local simulator.
-- [ ] Vehicle-scoped agent credentials, session fencing, command expiry and reconciliation.
+- [ ] Fleet agent credentials, session fencing, command expiry and reconciliation.
 - [x] Adapter-driven takeoff → hover → land; acknowledged takeover and manual landing verified with the local simulator.
 - [ ] Independent live telemetry, measured lifecycle, stale-data handling, smooth display.
 - [ ] Authorized camera integration contract and honest availability states.
 - [x] Existing customer/operator browser flow, manual flight, and restart reconciliation pass; no further testing at user request.
 - [ ] Production configuration, operator/agent provisioning, deployment and adapter documentation.
 
-Work wrapped at user request. See `IMPLEMENTATION_HANDOFF.md` for the complete implementation inventory, verification evidence, and remaining limitations. Unchecked production items are not represented as complete.
+- [x] Operator fleet agent token: one `IRIS_AGENT_TOKEN` authenticates `npm run agent` for the pilot's entire fleet; per-vehicle credentials are no longer issued.
 
 Physical aircraft integration is unverified and remains disabled. The historical completed checks below describe the simulator only.
 

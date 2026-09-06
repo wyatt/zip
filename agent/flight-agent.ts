@@ -4,24 +4,29 @@ import { api } from "../convex/_generated/api";
 import type { FunctionReturnType } from "convex/server";
 import type { Id } from "../convex/_generated/dataModel";
 import { SimulatedDrone } from "./adapters/simulated-drone";
-import { UnsupportedAircraftError, type CommandContext, type DroneAdapter } from "./drone-adapter";
+import type { CommandContext, DroneAdapter } from "./drone-adapter";
 import { MissionExecutor } from "./mission-executor";
 import { executeAdapterCommand } from "./adapter-command";
 import { validateAdapterPlan } from "./validate-plan";
 import { setTimeout as delay } from "node:timers/promises";
 import { serializeFlightPlan, type AircraftSample } from "../lib/operations";
-import { startControlGateway } from "./control-gateway";
+import { startControlGateway, type ControlGrant } from "./control-gateway";
 
+type FleetVehicle = FunctionReturnType<typeof api.agentLink.fleet>[number];
 type Work = FunctionReturnType<typeof api.agentLink.work>;
-export async function startFlightAgent(url: string, token: string) {
-  const client = new ConvexClient(url);
-  const config = await client.query(api.agentLink.configuration, { token });
-  let adapter: DroneAdapter;
-  if (config.environment === "simulated") adapter = new SimulatedDrone(config.hardwareId, config.home);
-  else { await client.close(); throw new UnsupportedAircraftError(); }
+type VehicleHandle = {
+  adapter: DroneAdapter;
+  getSessionId: () => Id<"agentSessions">;
+  owns: (grant: ControlGrant) => boolean;
+  shutdown: () => Promise<boolean>;
+};
+
+async function connectVehicle(client: ConvexClient, token: string, instanceId: string, config: FleetVehicle, isShuttingDown: () => boolean): Promise<VehicleHandle> {
+  if (config.environment !== "simulated") throw new Error("Physical adapters are not installed.");
+  const adapter: DroneAdapter = new SimulatedDrone(config.hardwareId, config.home);
   const identity = await adapter.connect();
-  const instanceId = randomUUID();
-  let sessionId = await client.mutation(api.agentLink.open, { token, instanceId, hardwareId: identity.hardwareId, environment: identity.environment, capabilities: identity.capabilities });
+  const openArgs = () => ({ token, vehicleId: config.vehicleId, instanceId, hardwareId: identity.hardwareId, environment: identity.environment, capabilities: identity.capabilities });
+  let sessionId = await client.mutation(api.agentLink.open, openArgs());
   const executor = new MissionExecutor(adapter);
   let latestSample: AircraftSample | null = null;
   let latestWork: Work | null = null;
@@ -44,27 +49,27 @@ export async function startFlightAgent(url: string, token: string) {
   }
   function subscribe() {
     return client.onUpdate(api.agentLink.work, sessionArgs(), work => { latestWork = work; contact(); void processWork(); }, error => {
-      console.error("Agent subscription requires reconciliation:", error instanceof Error ? error.message : "connection error");
+      console.error(`${identity.hardwareId} subscription requires reconciliation:`, error instanceof Error ? error.message : "connection error");
       void reconnect();
     });
   }
   let unsubscribe = subscribe();
   async function reconnect() {
-    if (reconnecting || shuttingDown) return;
+    if (reconnecting || shuttingDown || isShuttingDown()) return;
     reconnecting = true;
     try {
       await failLocally("Backend connection lost; local failsafe engaged.");
       unsubscribe();
-      sessionId = await client.mutation(api.agentLink.open, { token, instanceId, hardwareId: identity.hardwareId, environment: identity.environment, capabilities: identity.capabilities });
+      sessionId = await client.mutation(api.agentLink.open, openArgs());
       observedSequence = -1;
       latestWork = null;
       unsubscribe = subscribe();
       contact();
-    } catch (error) { console.error("Agent reconnect pending:", error instanceof Error ? error.message : "connection error"); }
+    } catch (error) { console.error(`${identity.hardwareId} reconnect pending:`, error instanceof Error ? error.message : "connection error"); }
     finally { reconnecting = false; }
   }
   async function processWork() {
-    if (processing || shuttingDown || !latestWork) return;
+    if (processing || shuttingDown || isShuttingDown() || !latestWork) return;
     processing = true;
     try {
       const work = latestWork;
@@ -129,59 +134,122 @@ export async function startFlightAgent(url: string, token: string) {
         }
       }
     } catch (error) {
-      // Readiness can change while a plan is being prepared; the processing interval retries it.
-      if (latestWork?.operation?.state !== "assigned") console.error("Agent work:", error instanceof Error ? error.message : "work error");
+      if (latestWork?.operation?.state !== "assigned") console.error(`${identity.hardwareId} work:`, error instanceof Error ? error.message : "work error");
     } finally { processing = false; }
   }
   const publishTimer = setInterval(() => {
-    if (publishing || !latestSample || latestSample.sequence === observedSequence || shuttingDown) return;
+    if (publishing || !latestSample || latestSample.sequence === observedSequence || shuttingDown || isShuttingDown()) return;
     publishing = true;
     const sample = latestSample;
     void client.mutation(api.agentLink.publish, { ...sessionArgs(), sample }).then(() => { observedSequence = sample.sequence; contact(); }).catch(() => undefined).finally(() => { publishing = false; });
   }, 100);
   const heartbeatTimer = setInterval(() => {
-    if (renewing || shuttingDown) return;
+    if (renewing || shuttingDown || isShuttingDown()) return;
     renewing = true;
     void client.mutation(api.agentLink.renew, sessionArgs()).then(contact).catch(() => reconnect()).finally(() => { renewing = false; });
   }, 2000);
   const workTimer = setInterval(() => { void processWork(); }, 250);
   const cameraTimer = setInterval(() => {
     const operationId = latestWork?.operation?._id;
-    if (!operationId || !adapter.openCameraStream || !identity.capabilities.includes("camera") || cameraPublishing || shuttingDown || (cameraPublishedFor === operationId && cameraExpiresAt > Date.now() + 30000)) return;
+    if (!operationId || !adapter.openCameraStream || !identity.capabilities.includes("camera") || cameraPublishing || shuttingDown || isShuttingDown() || (cameraPublishedFor === operationId && cameraExpiresAt > Date.now() + 30000)) return;
     cameraPublishing = true;
     void adapter.openCameraStream().then(async stream => {
       await client.mutation(api.cameras.publish, { ...sessionArgs(), operationId, ...stream });
       cameraPublishedFor = operationId; cameraExpiresAt = stream.expiresAt;
-    }).catch(() => console.error("Camera stream is unavailable.")).finally(() => { cameraPublishing = false; });
+    }).catch(() => console.error(`${identity.hardwareId}: camera stream is unavailable.`)).finally(() => { cameraPublishing = false; });
   }, 5000);
   const watchdogTimer = setInterval(() => {
     if (!linkLost && Date.now() - lastBackendContact > 3000) { linkLost = true; void failLocally("Cloud link lost; local failsafe engaged."); }
   }, 100);
-  const gateway = await startControlGateway({
-    adapter, port: Number(process.env.ZIP_CONTROL_PORT ?? "8765"), allowedOrigin: process.env.ZIP_ALLOWED_ORIGIN ?? "http://127.0.0.1:3000",
-    redeem: ticket => client.mutation(api.manualControl.redeem, { ...sessionArgs(), ticket }),
-    owns: grant => !shuttingDown && Date.now() - lastBackendContact < 3000 && latestWork?.operation?._id === grant.operationId && latestWork.operation.controlGeneration === grant.generation && latestWork.operation.controlOwner === "computer" && latestWork.operation.state === "manual",
-    ...(process.env.ZIP_CONTROL_TLS_CERT && process.env.ZIP_CONTROL_TLS_KEY ? { tls: { certificatePath: process.env.ZIP_CONTROL_TLS_CERT, keyPath: process.env.ZIP_CONTROL_TLS_KEY } } : {}),
-  });
   console.log(`${identity.model} connected as ${identity.hardwareId}. Environment: ${identity.environment}. Telemetry: 20 Hz source / up to 10 Hz publication.`);
   return {
     adapter,
     getSessionId: (): Id<"agentSessions"> => sessionId,
+    owns: grant => !shuttingDown && !isShuttingDown() && Date.now() - lastBackendContact < 3000 && latestWork?.operation?._id === grant.operationId && latestWork.operation.controlGeneration === grant.generation && latestWork.operation.controlOwner === "computer" && latestWork.operation.state === "manual",
     async shutdown() {
-      if (shuttingDown) return;
+      if (shuttingDown) return true;
       shuttingDown = true;
       activeExecution?.abort();
       const telemetry = await adapter.getTelemetry();
       if (telemetry.airborne || telemetry.armed) {
         shuttingDown = false;
         await failLocally("Agent shutdown requested during flight; verify landing before closing.");
-        console.error("Agent remains online until aircraft is grounded and disarmed. Retry shutdown after landing.");
-        return;
+        console.error(`${identity.hardwareId} remains online until aircraft is grounded and disarmed.`);
+        return false;
       }
       for (const timer of [publishTimer, heartbeatTimer, workTimer, watchdogTimer, cameraTimer]) clearInterval(timer);
-      await gateway.close();
       sampleSubscription(); unsubscribe();
       await adapter.disconnect();
+      return true;
+    },
+  };
+}
+
+export async function startFlightAgent(url: string, token: string) {
+  const client = new ConvexClient(url);
+  const instanceId = randomUUID();
+  const vehicles = new Map<string, VehicleHandle>();
+  const skipped = new Set<string>();
+  let shuttingDown = false;
+  async function pulse() {
+    if (shuttingDown) return;
+    await client.mutation(api.agentLink.pulse, { token });
+  }
+  async function connect(config: FleetVehicle) {
+    if (vehicles.has(config.vehicleId) || skipped.has(config.vehicleId)) return;
+    if (config.environment !== "simulated") {
+      skipped.add(config.vehicleId);
+      console.error(`${config.name} (${config.hardwareId}) skipped: physical adapters are not installed.`);
+      return;
+    }
+    try {
+      vehicles.set(config.vehicleId, await connectVehicle(client, token, instanceId, config, () => shuttingDown));
+    } catch (error) {
+      console.error(`${config.hardwareId}:`, error instanceof Error ? error.message : "failed to connect");
+    }
+  }
+  async function sync(list: FleetVehicle[]) {
+    const ids = new Set(list.map(vehicle => vehicle.vehicleId));
+    for (const [id, handle] of [...vehicles]) {
+      if (ids.has(id as Id<"vehicles">)) continue;
+      if (await handle.shutdown()) vehicles.delete(id);
+    }
+    for (const id of [...skipped]) if (!ids.has(id as Id<"vehicles">)) skipped.delete(id);
+    for (const config of list) await connect(config);
+  }
+  let unsubscribe = client.onUpdate(api.agentLink.fleet, { token }, list => { void sync(list); }, error => {
+    console.error("Fleet subscription requires reconciliation:", error instanceof Error ? error.message : "connection error");
+  });
+  await pulse();
+  const pulseTimer = setInterval(() => { void pulse().catch(error => {
+    console.error("Flight server heartbeat failed:", error instanceof Error ? error.message : "connection error");
+  }); }, 2000);
+  await sync(await client.query(api.agentLink.fleet, { token }));
+  const gateway = await startControlGateway({
+    port: Number(process.env.IRIS_CONTROL_PORT ?? "8765"), allowedOrigin: process.env.IRIS_ALLOWED_ORIGIN ?? "http://127.0.0.1:3000",
+    redeem: ticket => client.mutation(api.manualControl.redeem, { token, ticket }),
+    adapterFor: vehicleId => vehicles.get(vehicleId)?.adapter,
+    owns: grant => vehicles.get(grant.vehicleId)?.owns(grant) ?? false,
+    ...(process.env.IRIS_CONTROL_TLS_CERT && process.env.IRIS_CONTROL_TLS_KEY ? { tls: { certificatePath: process.env.IRIS_CONTROL_TLS_CERT, keyPath: process.env.IRIS_CONTROL_TLS_KEY } } : {}),
+  });
+  console.log(`Fleet agent online. Connected aircraft: ${vehicles.size}.`);
+  return {
+    async shutdown() {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      let blocked = false;
+      for (const [id, handle] of [...vehicles]) {
+        if (await handle.shutdown()) vehicles.delete(id);
+        else blocked = true;
+      }
+      if (blocked) {
+        shuttingDown = false;
+        console.error("Agent remains online until all aircraft are grounded and disarmed. Retry shutdown after landing.");
+        return;
+      }
+      unsubscribe();
+      clearInterval(pulseTimer);
+      await gateway.close();
       await client.close();
     },
   };

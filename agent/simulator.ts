@@ -11,7 +11,7 @@ export interface FlightAdapter {
 export class SimulatorAdapter implements FlightAdapter {
   private route: Point[] | null = null;
   private taskType?: string;
-  async connect() { return { identity: "zip-sim-01", ready: true }; }
+  async connect() { return { identity: "iris-sim-01", ready: true }; }
   loadMission(route: Point[], taskType?: string) { this.route = route; this.taskType = taskType; }
   async start(publish: (snapshot: Snapshot) => Promise<void>) {
     if (!this.route) throw new Error("Load a mission before starting.");

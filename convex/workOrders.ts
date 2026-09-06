@@ -1,16 +1,16 @@
 import { areaGeometry } from "../lib/areas";
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import { requireMember, requireOperator, hashSecret } from "./access";
+import { requireCustomer, requireOperator, hashSecret } from "./access";
 import { controlMode, environment, geo, jobKind, surveyArea } from "./operationsSchema";
 import { assertGeo, createFlightPlan, serializeFlightPlan, matchesRequirements, metersBetween, requiredCapabilities } from "../lib/operations";
 
 export const mine = query({ args: {}, handler: async ctx => {
-  const member = await requireMember(ctx);
+  const member = await requireCustomer(ctx);
   return ctx.db.query("workOrders").withIndex("by_customer", q => q.eq("customerId", member.userId)).order("desc").take(100);
 } });
 export const submit = mutation({ args: { title: v.string(), description: v.string(), kind: jobKind, environment, location: geo, area: v.optional(surveyArea), destinations: v.array(geo), payloadKg: v.number(), altitudeM: v.number(), hoverSec: v.number() }, handler: async (ctx, args) => {
-  const member = await requireMember(ctx);
+  const member = await requireCustomer(ctx);
   const title = args.title.trim(), description = args.description.trim();
   if (title.length < 3 || title.length > 100 || description.length > 2000) throw new Error("Provide a title (3–100 characters) and instructions under 2,000 characters.");
   assertGeo(args.location);
@@ -59,7 +59,7 @@ export const accept = mutation({ args: { workOrderId: v.id("workOrders"), vehicl
   return operationId;
 } });
 export const cancel = mutation({ args: { workOrderId: v.id("workOrders") }, handler: async (ctx, { workOrderId }) => {
-  const member = await requireMember(ctx);
+  const member = await requireCustomer(ctx);
   const order = await ctx.db.get(workOrderId);
   if (!order || order.customerId !== member.userId) throw new Error("Request not found.");
   if (order.status !== "open") throw new Error("An assigned operation must be resolved by the operator.");

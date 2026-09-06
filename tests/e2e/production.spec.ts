@@ -1,6 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
+import { saveOperatorLocations } from "./locations";
 
 async function signUp(page: Page, route: string, email: string, password: string, name: string) {
   await page.goto(route);
@@ -9,8 +10,9 @@ async function signUp(page: Page, route: string, email: string, password: string
   await page.getByLabel("Password", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Create account", exact: false }).click();
   await page.getByLabel("Your name", { exact: true }).fill(name);
+  await page.getByRole("radio", { name: route === "/operator" || route === "/fleet" ? /Operator/ : /Customer/ }).check();
   await page.getByRole("button", { name: "Open workspace", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Sign out", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Sign out", exact: true })).toBeVisible();
 }
 async function stopAgent(agent: ChildProcess | undefined) {
   if (!agent || agent.exitCode !== null || agent.signalCode !== null) return;
@@ -26,31 +28,33 @@ test("private customer request → self-registered operator → provisioned loca
   const customer = await customerContext.newPage(), operator = await operatorContext.newPage();
   const errors: string[] = [];
   for (const page of [customer, operator]) page.on("pageerror", error => errors.push(error.message));
-  const suffix = Date.now(), operatorEmail = `operator-${suffix}@zip.test`, password = `Zip-test-${suffix}-secure`;
+  const suffix = Date.now(), operatorEmail = `operator-${suffix}@iris.test`, password = `Iris-test-${suffix}-secure`;
   let agent: ChildProcess | undefined;
   let agentLogs = "";
   try {
     await signUp(operator, "/operator", operatorEmail, password, "Test Operator");
     await expect(operator.getByLabel("Invitation code")).toHaveCount(0);
-    await operator.getByRole("link", { name: "Register your drone" }).click();
+    await saveOperatorLocations(operator);
+    await operator.getByRole("link", { name: "Fleet", exact: true }).click();
+    await operator.getByRole("button", { name: "Add aircraft", exact: true }).click();
     await operator.getByLabel("Environment", { exact: true }).selectOption("simulated");
-    await operator.getByLabel("Name", { exact: true }).fill(`Flight test ${suffix}`);
-    await operator.getByLabel("Hardware identity", { exact: true }).fill(`test-sim-${suffix}`);
     await operator.getByRole("button", { name: "Register aircraft", exact: true }).click();
     await expect(operator.locator("pre.secret-value")).toBeVisible();
-    const agentToken = (await operator.locator("pre.secret-value").innerText()).replace("ZIP_AGENT_TOKEN=", "").trim();
-    agent = spawn(process.execPath, ["--import", "tsx", "agent/index.ts"], { env: { ...process.env, ZIP_AGENT_TOKEN: agentToken }, stdio: ["ignore", "pipe", "pipe"] });
+    const agentToken = (await operator.locator("pre.secret-value").innerText()).replace("IRIS_AGENT_TOKEN=", "").trim();
+    agent = spawn(process.execPath, ["--import", "tsx", "agent/index.ts"], { env: { ...process.env, IRIS_AGENT_TOKEN: agentToken }, stdio: ["ignore", "pipe", "pipe"] });
     agent.stdout?.on("data", data => { agentLogs += String(data); });
     agent.stderr?.on("data", data => { agentLogs += String(data); });
     await expect.poll(() => agentLogs, { timeout: 20000 }).toContain("Telemetry: 20 Hz");
-    await signUp(customer, "/request", `customer-${suffix}@zip.test`, password, "Test Customer");
+    await signUp(customer, "/request", `customer-${suffix}@iris.test`, password, "Test Customer");
+    await customer.getByRole("button", { name: "Inspection", exact: true }).click();
     await customer.getByLabel("Title", { exact: true }).fill(`Stability check ${suffix}`);
     await customer.getByLabel("Execution environment", { exact: true }).selectOption("simulated");
     await customer.getByLabel("Hover (s)", { exact: true }).fill("5");
     await customer.getByRole("button", { name: "Use map center", exact: true }).click();
+    await customer.getByRole("button", { name: "Use map center", exact: true }).click();
     await customer.getByRole("button", { name: "Submit request", exact: false }).click();
     await expect(customer.getByRole("heading", { name: "Finding a qualified operator" })).toBeVisible();
-    await operator.getByRole("link", { name: "Operator", exact: true }).click();
+    await operator.getByRole("link", { name: "Dashboard", exact: true }).click();
     await operator.getByRole("button").filter({ hasText: `Stability check ${suffix}` }).click();
     await operator.getByRole("button", { name: "Accept job & create plan", exact: false }).click();
     const start = operator.getByRole("button", { name: "Start flight", exact: false });
@@ -62,20 +66,22 @@ test("private customer request → self-registered operator → provisioned loca
     await operator.screenshot({ path: testInfo.outputPath("operator-flight.png"), fullPage: true });
     await expect(operator.getByRole("heading", { name: "Completed", exact: true })).toBeVisible({ timeout: 30000 });
     await expect(customer.getByRole("heading", { name: "Completed", exact: true })).toBeVisible();
-    await expect(operator.getByText("Flight check verified: takeoff, hover, landing, and disarm.")).toBeVisible();
+    await expect(operator.getByText("Flight completed. The requested task result remains unverified.")).toBeVisible();
     await operator.getByText("Flight activity", { exact: false }).click();
     const events = await operator.locator(".events li").allTextContents();
-    expect(events.findIndex(e => e.includes("Land and disarm verified"))).toBeLessThan(events.findIndex(e => e.includes("Flight check completed")));
+    expect(events.findIndex(e => e.includes("Land and disarm verified"))).toBeLessThan(events.findIndex(e => e.includes("Flight completed")));
     await Promise.all([customer.reload(), operator.reload()]);
     await expect(customer.getByRole("heading", { name: "Completed", exact: true })).toBeVisible();
     await expect(operator.getByRole("heading", { name: "Completed", exact: true })).toBeVisible();
     await operator.screenshot({ path: testInfo.outputPath("operator-completed.png"), fullPage: true });
     // Reuse this aircraft across operations; control generations must remain monotonic.
     async function requestAnother(title: string, manual: boolean) {
-      await customer.getByRole("button", { name: "Request a flight", exact: true }).click();
+      await customer.getByRole("button", { name: "Back to requests", exact: true }).click();
+      await customer.getByRole("button", { name: "Inspection", exact: true }).click();
       await customer.getByLabel("Title", { exact: true }).fill(title);
       await customer.getByLabel("Execution environment", { exact: true }).selectOption("simulated");
       await customer.getByLabel("Hover (s)", { exact: true }).fill("5");
+      await customer.getByRole("button", { name: "Use map center", exact: true }).click();
       await customer.getByRole("button", { name: "Use map center", exact: true }).click();
       await customer.getByRole("button", { name: "Submit request", exact: false }).click();
       await operator.getByRole("button").filter({ hasText: title }).click();
@@ -94,7 +100,7 @@ test("private customer request → self-registered operator → provisioned loca
     const north = operator.getByRole("button", { name: "North", exact: true });
     await north.hover(); await operator.mouse.down(); await operator.waitForTimeout(600); await operator.mouse.up();
     await operator.screenshot({ path: testInfo.outputPath("operator-computer-takeover.png"), fullPage: true });
-    await expect(operator.locator(".production-steps li.completed").filter({ hasText: "Hover check" })).toBeVisible({ timeout: 15000 });
+    await expect(operator.locator(".production-steps li.completed").filter({ hasText: "Hold at task location" })).toBeVisible({ timeout: 15000 });
     await operator.getByRole("button", { name: "Manual land", exact: true }).click();
     await expect(operator.getByRole("heading", { name: "Completed", exact: true })).toBeVisible({ timeout: 15000 });
     await requestAnother(`Manual check ${suffix}`, true);
@@ -103,7 +109,7 @@ test("private customer request → self-registered operator → provisioned loca
     await operator.getByRole("button", { name: "Connect computer controls", exact: true }).click();
     await expect(operator.getByText("Computer controls connected", { exact: true })).toBeVisible();
     await operator.getByRole("button", { name: "Manual takeoff", exact: true }).click();
-    await expect(operator.locator(".production-steps li.completed").filter({ hasText: "Hover check" })).toBeVisible({ timeout: 20000 });
+    await expect(operator.locator(".production-steps li.completed").filter({ hasText: "Hold at task location" })).toBeVisible({ timeout: 20000 });
     await operator.getByRole("button", { name: "Manual land", exact: true }).click();
     await expect(operator.getByRole("heading", { name: "Completed", exact: true })).toBeVisible({ timeout: 15000 });
     await requestAnother(`Reconnect check ${suffix}`, false);
@@ -112,7 +118,7 @@ test("private customer request → self-registered operator → provisioned loca
     oldAgent.kill("SIGKILL"); await once(oldAgent, "exit");
     await expect(operator.getByTestId("telemetry-status")).toHaveText("Telemetry stale", { timeout: 5000 });
     await expect(operator.getByRole("heading", { name: "Attention required", exact: true })).toBeVisible({ timeout: 15000 });
-    agent = spawn(process.execPath, ["--import", "tsx", "agent/index.ts"], { env: { ...process.env, ZIP_AGENT_TOKEN: agentToken }, stdio: ["ignore", "pipe", "pipe"] });
+    agent = spawn(process.execPath, ["--import", "tsx", "agent/index.ts"], { env: { ...process.env, IRIS_AGENT_TOKEN: agentToken }, stdio: ["ignore", "pipe", "pipe"] });
     agent.stdout?.on("data", data => { agentLogs += String(data); }); agent.stderr?.on("data", data => { agentLogs += String(data); });
     await expect(operator.getByTestId("telemetry-status")).toHaveText("Live telemetry", { timeout: 15000 });
     await expect(operator.getByRole("heading", { name: "Attention required", exact: true })).toBeVisible();

@@ -7,9 +7,9 @@ import type { DroneAdapter } from "./drone-adapter";
 import { executeAdapterCommand } from "./adapter-command";
 import { metersBetween, type FlightPlan } from "../lib/operations";
 
-export type ControlGrant = { operationId: string; generation: number; expiresAt: number; plan: FlightPlan };
+export type ControlGrant = { operationId: string; vehicleId: string; generation: number; expiresAt: number; plan: FlightPlan };
 type Options = {
-  adapter: DroneAdapter;
+  adapterFor: (vehicleId: string) => DroneAdapter | undefined;
   port: number;
   allowedOrigin: string;
   redeem: (ticket: string) => Promise<ControlGrant>;
@@ -23,6 +23,11 @@ export async function startControlGateway(options: Options) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 2048, perMessageDeflate: false });
   let controlling: WebSocket | null = null;
   const landing = new Set<string>();
+  const adapter = (grant: ControlGrant) => {
+    const found = options.adapterFor(grant.vehicleId);
+    if (!found) throw new Error("Aircraft is not connected to this agent.");
+    return found;
+  };
   server.on("request", (_, response) => { response.writeHead(404); response.end(); });
   server.on("upgrade", (request, socket, head) => {
     if (request.url !== "/control" || request.headers.origin !== options.allowedOrigin) { socket.destroy(); return; }
@@ -40,9 +45,10 @@ export async function startControlGateway(options: Options) {
     const send = (value: object) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(value)); };
     const context = (id: string, ttl = 250) => ({ commandId: id, generation: grant!.generation, expiresAt: Date.now() + ttl, signal: abort.signal });
     async function hold(force = false) {
-      if ((!force && holding) || !grant || !options.owns(grant) || landing.has(landingKey())) return;
+      const current = grant;
+      if ((!force && holding) || !current || !options.owns(current) || landing.has(landingKey())) return;
       holding = true;
-      await executeAdapterCommand(context(`deadman-${randomUUID()}`, 1000), command => options.adapter.stop(command)).catch(() => options.adapter.handleLinkLoss("Manual control channel lost."));
+      await executeAdapterCommand(context(`deadman-${randomUUID()}`, 1000), command => adapter(current).stop(command)).catch(() => adapter(current).handleLinkLoss("Manual control channel lost."));
     }
     const authDeadline = setTimeout(() => { if (!grant) ws.close(1008, "Authentication required"); }, 3000);
     const watchdog = setInterval(() => {
@@ -89,40 +95,41 @@ export async function startControlGateway(options: Options) {
           const input = queue.shift()!;
           if (closing && input.type !== "land") { rejected(input, "Control channel closed."); continue; }
           try {
-            if (!grant || grant.expiresAt <= Date.now() || !options.owns(grant)) throw new Error("Control authority changed.");
+            const current = grant;
+            if (!current || current.expiresAt <= Date.now() || !options.owns(current)) throw new Error("Control authority changed.");
             if (Date.now() - Number(input.sentAt) > (input.type === "move" ? 300 : 1500)) throw new Error("Control command expired before execution.");
             const isLanding = landing.has(landingKey());
             if (isLanding && input.type !== "land") throw new Error("Landing is in progress.");
-            const id = `manual-${grant.generation}-${randomUUID()}`;
+            const id = `manual-${current.generation}-${randomUUID()}`;
             const command = context(id, input.type === "move" ? 250 : 1000);
             // Land and hold are recovery actions. Missing navigation or a breached
             // boundary must not prevent asking the controller to stop or descend.
             if (input.type === "land") {
-              await executeAdapterCommand(command, context => options.adapter.land(context));
+              await executeAdapterCommand(command, context => adapter(current).land(context));
               holding = true;
             } else if (input.type === "stop") {
-              await executeAdapterCommand(command, context => options.adapter.stop(context));
+              await executeAdapterCommand(command, context => adapter(current).stop(context));
               holding = true;
             } else {
-              const sample = await options.adapter.getTelemetry();
+              const sample = await adapter(current).getTelemetry();
               if (!sample.connected || Date.now() - sample.capturedAt > 1000 || !sample.navigationHealthy || sample.controlOwner !== "computer" || sample.faults.length) throw new Error("Aircraft is not ready for computer controls.");
-              if (!sample.position || sample.altitudeM === null || metersBetween(sample.position, grant.plan.home) > grant.plan.radiusM || sample.altitudeM > grant.plan.maxAltitudeM) throw new Error("Aircraft position is unavailable or outside the flight boundary.");
+              if (!sample.position || sample.altitudeM === null || metersBetween(sample.position, current.plan.home) > current.plan.radiusM || sample.altitudeM > current.plan.maxAltitudeM) throw new Error("Aircraft position is unavailable or outside the flight boundary.");
               if (input.type === "takeoff") {
-                await executeAdapterCommand(command, context => options.adapter.takeoff(grant!.plan.steps[0].altitudeM, context));
+                await executeAdapterCommand(command, context => adapter(current).takeoff(current.plan.steps[0].altitudeM, context));
                 holding = true;
               } else {
                 const values = [input.vx, input.vy, input.vz, input.yaw];
                 if (values.some(value => typeof value !== "number" || !Number.isFinite(value)) || Math.hypot(Number(input.vx), Number(input.vy)) > 2 || Math.abs(Number(input.vz)) > 1 || Math.abs(Number(input.yaw)) > 45) throw new Error("Control input exceeds limits.");
                 const projected = { lat: sample.position.lat + Number(input.vx) / 111320, lon: sample.position.lon + Number(input.vy) / (111320 * Math.cos(sample.position.lat * Math.PI / 180)) };
-                if (metersBetween(projected, grant.plan.home) > grant.plan.radiusM - 2 || sample.altitudeM + Number(input.vz) > grant.plan.maxAltitudeM - 1) throw new Error("Control input would breach the flight boundary.");
-                await executeAdapterCommand(command, context => options.adapter.move(Number(input.vx), Number(input.vy), Number(input.vz), Number(input.yaw), context));
+                if (metersBetween(projected, current.plan.home) > current.plan.radiusM - 2 || sample.altitudeM + Number(input.vz) > current.plan.maxAltitudeM - 1) throw new Error("Control input would breach the flight boundary.");
+                await executeAdapterCommand(command, context => adapter(current).move(Number(input.vx), Number(input.vy), Number(input.vz), Number(input.yaw), context));
                 lastInput = Date.now(); holding = false;
               }
             }
             send({ type: "acknowledged", sequence: input.sequence, action: input.type });
           } catch (error) {
             if (input.type === "land" && grant && options.owns(grant)) {
-              await options.adapter.handleLinkLoss("Landing acknowledgment failed; reconcile aircraft state.").catch(() => undefined);
+              await adapter(grant).handleLinkLoss("Landing acknowledgment failed; reconcile aircraft state.").catch(() => undefined);
             } else await hold();
             rejected(input, error instanceof Error ? error.message : "Aircraft rejected input.");
           }

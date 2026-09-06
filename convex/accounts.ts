@@ -1,8 +1,8 @@
 import { v } from "convex/values";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { internalMutation, mutation, query } from "./_generated/server";
-import { requireUser, requireMember, requireAdmin, requireOperator, hashSecret } from "./access";
-import { geo, jobKind } from "./operationsSchema";
+import { requireUser, requireOperatorAccount, requireAdmin, requireOperator, hashSecret } from "./access";
+import { geo, jobKind, presetLocation } from "./operationsSchema";
 import { assertGeo } from "../lib/operations";
 
 export const me = query({ args: {}, handler: async ctx => {
@@ -14,16 +14,16 @@ export const me = query({ args: {}, handler: async ctx => {
   const operator = await ctx.db.query("operatorProfiles").withIndex("by_user", q => q.eq("userId", userId)).unique();
   return { userId, email: user.email, member, operator };
 } });
-export const setup = mutation({ args: { displayName: v.string() }, handler: async (ctx, { displayName }) => {
+export const setup = mutation({ args: { displayName: v.string(), role: v.union(v.literal("customer"), v.literal("operator"), v.literal("demo")) }, handler: async (ctx, { displayName, role }) => {
   const userId = await requireUser(ctx);
   const name = displayName.trim();
   if (name.length < 2 || name.length > 80) throw new Error("Enter a name between 2 and 80 characters.");
   const existing = await ctx.db.query("members").withIndex("by_user", q => q.eq("userId", userId)).unique();
   if (existing) { await ctx.db.patch(existing._id, { displayName: name }); return existing._id; }
-  return ctx.db.insert("members", { userId, displayName: name, role: "customer" });
+  return ctx.db.insert("members", { userId, displayName: name, role });
 } });
 export const redeemInvite = mutation({ args: { token: v.string(), base: geo, serviceRadiusM: v.number() }, handler: async (ctx, args) => {
-  const member = await requireMember(ctx);
+  const member = await requireOperatorAccount(ctx);
   if (args.token.length > 200) throw new Error("Invalid invitation.");
   const tokenHash = await hashSecret(args.token);
   const invite = await ctx.db.query("operatorInvites").withIndex("by_hash", q => q.eq("tokenHash", tokenHash)).unique();
@@ -31,15 +31,51 @@ export const redeemInvite = mutation({ args: { token: v.string(), base: geo, ser
   if (!invite || invite.expiresAt < Date.now() || invite.redeemedBy || user?.email?.toLowerCase() !== invite.email) throw new Error("Invitation is invalid, expired, or belongs to another account.");
   assertGeo(args.base);
   if (!Number.isFinite(args.serviceRadiusM) || args.serviceRadiusM < 100 || args.serviceRadiusM > 100000) throw new Error("Service radius must be 100–100,000 meters.");
-  await ctx.db.patch(member._id, { role: member.role === "admin" ? "admin" : "operator" });
+  await ctx.db.patch(member._id, { role: member.role === "admin" || member.role === "demo" ? member.role : "operator" });
   const profile = await ctx.db.query("operatorProfiles").withIndex("by_user", q => q.eq("userId", member.userId)).unique();
-  const fields = { approved: true, acceptingJobs: true, qualifications: ["flight_check" as const], base: args.base, serviceRadiusM: args.serviceRadiusM };
+  const fields = { approved: true, acceptingJobs: true, qualifications: ["flight_check" as const], base: args.base, serviceRadiusM: args.serviceRadiusM, presetLocations: [{ name: "Home", lat: args.base.lat, lon: args.base.lon }] };
   if (profile) await ctx.db.patch(profile._id, fields); else await ctx.db.insert("operatorProfiles", { userId: member.userId, ...fields });
   await ctx.db.patch(invite._id, { redeemedBy: member.userId });
 } });
 export const updateAvailability = mutation({ args: { acceptingJobs: v.boolean() }, handler: async (ctx, args) => {
   const { profile } = await requireOperator(ctx);
   await ctx.db.patch(profile._id, args);
+} });
+export const savePresetLocations = mutation({ args: { locations: v.array(presetLocation), serviceRadiusM: v.optional(v.number()) }, handler: async (ctx, args) => {
+  const member = await requireOperatorAccount(ctx);
+  if (args.locations.length > 20) throw new Error("You can save at most 20 launch sites.");
+  const names = new Set<string>();
+  const locations = [];
+  for (const location of args.locations) {
+    const name = location.name.trim();
+    if (name.length < 1 || name.length > 40) throw new Error("Each launch site needs a name of 1–40 characters.");
+    const key = name.toLowerCase();
+    if (names.has(key)) throw new Error("Launch site names must be unique.");
+    names.add(key);
+    assertGeo({ lat: location.lat, lon: location.lon });
+    locations.push({ name, lat: location.lat, lon: location.lon });
+  }
+  if (locations.length < 1) throw new Error("Add at least one launch site.");
+  const serviceRadiusM = args.serviceRadiusM;
+  if (serviceRadiusM !== undefined && (!Number.isFinite(serviceRadiusM) || serviceRadiusM < 100 || serviceRadiusM > 100000)) {
+    throw new Error("Service radius must be 100–100,000 meters.");
+  }
+  const home = locations.find(location => location.name.toLowerCase() === "home") ?? locations[0]!;
+  const base = { lat: home.lat, lon: home.lon };
+  const profile = await ctx.db.query("operatorProfiles").withIndex("by_user", q => q.eq("userId", member.userId)).unique();
+  if (profile) {
+    await ctx.db.patch(profile._id, { presetLocations: locations, base, ...(serviceRadiusM !== undefined ? { serviceRadiusM } : {}) });
+    return profile._id;
+  }
+  return ctx.db.insert("operatorProfiles", {
+    userId: member.userId,
+    approved: true,
+    acceptingJobs: true,
+    qualifications: ["flight_check", "search", "inspection", "deliver"],
+    base,
+    serviceRadiusM: serviceRadiusM ?? 5000,
+    presetLocations: locations,
+  });
 } });
 export const configureOperator = mutation({ args: { userId: v.id("users"), approved: v.boolean(), qualifications: v.array(jobKind) }, handler: async (ctx, { userId, approved, qualifications }) => {
   await requireAdmin(ctx);
@@ -53,6 +89,13 @@ export const bootstrapAdmin = internalMutation({ args: { userId: v.id("users") }
   const member = await ctx.db.query("members").withIndex("by_user", q => q.eq("userId", userId)).unique();
   if (!member) throw new Error("Create and finish setting up the account first.");
   await ctx.db.patch(member._id, { role: "admin" });
+} });
+export const convertToDemo = internalMutation({ args: { memberId: v.id("members") }, returns: v.null(), handler: async (ctx, { memberId }) => {
+  const member = await ctx.db.get(memberId);
+  if (!member) throw new Error("Account not found.");
+  if (member.role === "admin") throw new Error("Administrator accounts cannot become demo accounts.");
+  await ctx.db.patch(memberId, { role: "demo" });
+  return null;
 } });
 export const storeInvite = internalMutation({ args: { email: v.string(), tokenHash: v.string() }, handler: async (ctx, args) => {
   const admin = await requireAdmin(ctx);

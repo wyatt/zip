@@ -8,14 +8,14 @@ function randomToken(prefix: string) {
 }
 
 export const inviteOperator = action({ args: { email: v.string() }, handler: async (ctx, { email }): Promise<{ token: string; expiresAt: number }> => {
-  const token = randomToken("zip_invite_");
+  const token = randomToken("iris_invite_");
   const tokenHash = await hashSecret(token);
   const result = await ctx.runMutation(internal.accounts.storeInvite, { email, tokenHash });
   return { token, ...result };
 } });
-export const issueAgentCredential = action({ args: { vehicleId: v.id("vehicles") }, handler: async (ctx, { vehicleId }): Promise<{ token: string; expiresAt: number }> => {
-  const token = randomToken("zip_agent_");
+export const issueAgentCredential = action({ args: {}, handler: async (ctx): Promise<{ token: string; expiresAt: number }> => {
+  const token = randomToken("iris_agent_");
   const tokenHash = await hashSecret(token);
-  const result = await ctx.runMutation(internal.fleet.storeCredential, { vehicleId, tokenHash });
+  const result = await ctx.runMutation(internal.fleet.storeCredential, { tokenHash });
   return { token, ...result };
 } });

@@ -39,7 +39,13 @@ export type AircraftSample = {
 export const TELEMETRY_STALE_MS = 2000;
 export const SESSION_LEASE_MS = 10000;
 export const COMMAND_TTL_MS = 8000;
-export const JOB_LABELS: Record<JobKind, string> = { flight_check: "Flight check", search: "Search", inspection: "Inspection", deliver: "Delivery" };
+export const JOB_LABELS: Record<JobKind, string> = { flight_check: "Flight check", search: "Search & Rescue", inspection: "Inspection", deliver: "Delivery" };
+export const REQUEST_MODES = [
+  { kind: "deliver" as const, label: "Delivery", summary: "Carry a payload to a drop-off.", frame: 0 },
+  { kind: "inspection" as const, label: "Inspection", summary: "Sweep a site with a camera.", frame: 1 },
+  { kind: "search" as const, label: "Search & Rescue", summary: "Search an area for a person or object.", frame: 2 },
+];
+export type RequestKind = (typeof REQUEST_MODES)[number]["kind"];
 export const OPERATION_LABELS: Record<OperationState, string> = { assigned: "Preparing flight", ready: "Ready for departure", starting: "Awaiting aircraft", active: "In flight", taking_over: "Transferring control", manual: "Operator in control", returning: "Returning home", landing: "Landing", completed: "Completed", cancelled: "Cancelled", attention: "Attention required" };
 
 export function assertGeo(point: GeoPoint) {
@@ -62,18 +68,21 @@ export function matchesRequirements(input: {
 }, operator: { approved: boolean; acceptingJobs: boolean; qualifications: JobKind[]; base: GeoPoint; serviceRadiusM: number }, vehicle: {
   environment: Environment; capabilities: Capability[]; maxPayloadKg: number; available: boolean; integrationApproved: boolean;
 }) {
+  const required = vehicle.environment === "simulated"
+    ? input.required.filter(capability => capability !== "camera" && capability !== "payload")
+    : input.required;
   return operator.approved && operator.acceptingJobs && operator.qualifications.includes(input.kind)
     && metersBetween(operator.base, input.location) <= operator.serviceRadiusM
     && vehicle.environment === input.environment && vehicle.available
     && (vehicle.environment === "simulated" || vehicle.integrationApproved)
-    && input.payloadKg <= vehicle.maxPayloadKg && input.required.every(cap => vehicle.capabilities.includes(cap));
+    && input.payloadKg <= vehicle.maxPayloadKg && required.every(cap => vehicle.capabilities.includes(cap));
 }
 
 export function createFlightPlan(input: { kind: JobKind; location: GeoPoint; destinations: GeoPoint[]; mode: ControlMode; home: GeoPoint; altitudeM: number; hoverSec: number; maxRadiusM: number }): FlightPlan {
   for (const point of [input.home, input.location, ...input.destinations]) assertGeo(point);
   if (!Number.isFinite(input.altitudeM) || input.altitudeM < 2 || input.altitudeM > 30) throw new Error("Choose an altitude between 2 and 30 meters.");
   if (!Number.isFinite(input.hoverSec) || input.hoverSec < 5 || input.hoverSec > 120) throw new Error("Hover duration must be between 5 and 120 seconds.");
-  if (!Number.isFinite(input.maxRadiusM) || input.maxRadiusM < 5 || input.maxRadiusM > 3000) throw new Error("Invalid flight boundary.");
+  if (!Number.isFinite(input.maxRadiusM) || input.maxRadiusM < 5 || input.maxRadiusM > 100000) throw new Error("Invalid flight boundary.");
   if (metersBetween(input.home, input.location) > input.maxRadiusM) throw new Error("The request is outside this aircraft's flight boundary.");
   const destinations = input.kind === "flight_check" ? [] : input.destinations;
   if (input.kind !== "flight_check" && (destinations.length < 1 || destinations.length > 50)) throw new Error("Select a route with 1–50 waypoints.");

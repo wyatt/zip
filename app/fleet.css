@@ -1,0 +1,432 @@
+.fleet-retro,
+.fleet-modal,
+.fleet-retro *,
+.fleet-modal * {
+  border-radius: 0 !important;
+}
+.fleet-retro .page-heading {
+  align-items: center;
+}
+.fleet-retro .heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.fleet-retro .add-aircraft,
+.fleet-retro .agent-server {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  min-width: 0;
+  height: 48px;
+  min-height: 48px;
+  padding: 0 16px;
+  border-width: 3px;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  box-sizing: border-box;
+}
+.fleet-retro .agent-server {
+  gap: 10px;
+  background: white;
+  color: var(--ink);
+  border: 3px solid var(--ink);
+}
+.server-pip {
+  width: 10px;
+  height: 10px;
+  background: #c5c8c0;
+  flex-shrink: 0;
+}
+.server-pip.on {
+  background: #2fbf4a;
+}
+.server-status {
+  border: 3px solid var(--ink);
+  background: #d5d8d0;
+  padding: 16px 18px;
+  margin: 16px 0 8px;
+}
+.server-status.online {
+  background: var(--ink);
+  color: #fff;
+}
+.server-status h3 {
+  margin: 0 0 6px;
+  font-size: 18px;
+}
+.server-status .muted {
+  margin: 0;
+  color: var(--ink);
+}
+.server-status.online .muted {
+  color: #dfe2da;
+}
+.heartbeat-list {
+  list-style: none;
+  padding: 0;
+  margin: 14px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.heartbeat-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  font-weight: 700;
+}
+.token-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 12px 0 16px;
+}
+.fleet-modal .credential-box {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.aircraft-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 22px;
+}
+.aircraft-card {
+  border: 3px solid var(--ink);
+  background: white;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  position: relative;
+  padding: 0;
+  text-align: left;
+}
+.remove-aircraft {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  z-index: 1;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  line-height: 0;
+}
+.remove-aircraft:hover:not(:disabled) {
+  color: #9b3327;
+}
+.remove-aircraft svg {
+  display: block;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+.sprite-well {
+  aspect-ratio: 1;
+  width: 100%;
+  background-color: #fff;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.58), rgba(255, 255, 255, 0.58)),
+    url("/drones/hangar-noise.png?v=5");
+  background-size: 72px 72px;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  display: grid;
+  place-items: center;
+  border-bottom: 0;
+  overflow: hidden;
+}
+.sprite-well img {
+  width: 92%;
+  height: 92%;
+  object-fit: contain;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  filter: drop-shadow(0 0 10px rgba(0, 0, 0, 0.18));
+}
+.link-banner {
+  text-align: center;
+  font-weight: 900;
+  font-size: 15px;
+  letter-spacing: 0.6px;
+  padding: 14px 12px;
+  border-bottom: 3px solid var(--ink);
+}
+.link-banner.online {
+  background: var(--ink);
+  color: #fff;
+}
+.link-banner.offline {
+  background: #d5d8d0;
+  color: #5c6158;
+}
+.aircraft-body {
+  padding: 14px 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.aircraft-body h2 {
+  font-size: 20px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.aircraft-type {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 0;
+}
+.tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.attr-fieldset legend {
+  margin-bottom: 14px;
+}
+.attr-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.attr-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(0, 1.2fr);
+  gap: 10px;
+  align-items: center;
+}
+.attr-row .tag {
+  width: 100%;
+  justify-content: flex-start;
+}
+.fleet-modal button.tag.on,
+.fleet-modal button.tag[aria-pressed="true"] {
+  background: var(--ink);
+  color: #fff;
+  opacity: 1;
+}
+.fleet-modal button.tag:disabled {
+  opacity: 1;
+  cursor: default;
+}
+.fleet-modal button.tag.on svg,
+.fleet-modal button.tag[aria-pressed="true"] svg {
+  color: #fff;
+  fill: currentColor;
+}
+.fleet-modal input.attr-input {
+  margin: 0;
+  background: white;
+  color: var(--ink);
+}
+.cap-icon {
+  display: grid;
+  place-items: center;
+  color: var(--ink);
+}
+.cap-icon svg,
+.tag svg {
+  display: block;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  border: 2px solid var(--ink);
+  background: white;
+  padding: 8px 10px;
+  color: var(--ink);
+  line-height: 1;
+}
+.tag.on,
+.tag[aria-pressed="true"] {
+  background: var(--ink);
+  color: #fff;
+}
+.tag svg {
+  color: inherit;
+  fill: currentColor;
+}
+.fleet-modal fieldset legend {
+  display: block;
+  margin-bottom: 14px;
+  padding-bottom: 2px;
+}
+
+.fleet-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 20, 15, 0.55);
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 24px 16px;
+}
+.fleet-modal {
+  width: min(520px, 100%);
+  max-height: min(92vh, 860px);
+  overflow: auto;
+  background: var(--canvas);
+  border: 4px solid var(--ink);
+  padding: 22px 22px 26px;
+}
+.fleet-modal h2 {
+  font-size: 22px;
+  line-height: 1.3;
+}
+.modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+.modal-preview {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 14px;
+  align-items: stretch;
+  margin: 18px 0 8px;
+  border: 0;
+  background: transparent;
+}
+.modal-preview .sprite-well {
+  height: auto;
+  border: 3px solid var(--ink);
+}
+.modal-preview-copy {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+  padding: 0;
+  min-width: 0;
+  border: 0;
+}
+.name-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+}
+.generated-name {
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.2;
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+}
+.fleet-modal .name-reload {
+  flex-shrink: 0;
+  width: 44px;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+  border: 3px solid var(--ink);
+  background: white;
+  color: var(--ink);
+}
+.name-reload svg {
+  display: block;
+  margin: 0 auto;
+  overflow: visible;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+.name-reload svg path {
+  stroke: currentColor;
+  stroke-width: 1.6;
+  paint-order: stroke fill;
+}
+.preview-name,
+.preview-type {
+  gap: 6px;
+  margin: 0;
+}
+.fleet-modal form {
+  margin-top: 14px;
+  gap: 16px;
+}
+.fleet-modal label {
+  font-size: 14px;
+  gap: 8px;
+}
+.fleet-modal input,
+.fleet-modal select {
+  font-family: Lato, Arial, sans-serif;
+  font-size: 15px;
+  border: 3px solid var(--ink);
+  padding: 10px;
+}
+.fleet-modal .primary {
+  justify-content: center;
+  border-width: 3px;
+}
+.fleet-modal.compact {
+  width: min(420px, 100%);
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
+}
+.fleet-modal .modal-actions button {
+  min-width: 110px;
+  justify-content: center;
+}
+.fleet-retro .error,
+.fleet-modal .error {
+  border-width: 3px;
+}
+.fleet-retro .credential-box,
+.fleet-retro .secret-value,
+.fleet-modal .credential-box,
+.fleet-modal .secret-value {
+  border-width: 3px;
+}
+
+@media (min-width: 1500px) {
+  .aircraft-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+}
+@media (max-width: 1100px) {
+  .aircraft-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 720px) {
+  .modal-preview {
+    grid-template-columns: 1fr;
+  }
+  .modal-preview .sprite-well {
+    border: 3px solid var(--ink);
+  }
+  .aircraft-grid {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+}
