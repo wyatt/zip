@@ -3,3 +3,6 @@ __pycache__/
 outputs/
 viewer/node_modules/
 viewer/dist/
+.venv/
+.venv312/
+viewer/public/region/

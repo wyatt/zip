@@ -40,5 +40,5 @@ export function createInspectionOverlay(scene,meta,heights,flags,baseline,mapHei
   fill.renderOrder=11;
   scene.add(fill);
   // A floating area annotation, not a flight-altitude or route surface.
-  return {updateCoverage,dispose(){texture.dispose();}};
+  return {updateCoverage,setVisible(value){fill.visible=value;},dispose(){scene.remove(fill);fill.geometry.dispose();fill.material.dispose();texture.dispose();}};
 }
