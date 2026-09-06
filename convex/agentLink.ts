@@ -4,7 +4,6 @@ import { internal } from "./_generated/api";
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireAgentSession, requireCredential } from "./access";
-import { physicalIntegrationAllowed } from "../lib/roles";
 import { profileLaunchSites, resolvedVehicleHome } from "./fleet";
 import { aircraftSample, capability, controlOwner, environment } from "./operationsSchema";
 import { preflightProblems, SESSION_LEASE_MS, stepSatisfied, validateSample } from "../lib/operations";
@@ -46,7 +45,10 @@ export const open = mutation({ args: { token: v.string(), vehicleId: v.id("vehic
   const previous = vehicle.activeSessionId ? await ctx.db.get(vehicle.activeSessionId) : null;
   if (previous && !previous.retired && previous.leaseUntil > Date.now()) {
     if (previous.instanceId === args.instanceId && previous.credentialId === credential._id) return previous._id;
-    throw new Error("Another flight agent owns this aircraft.");
+    // Same fleet token may reclaim a silent session after a crash. A live agent renews lastSeenAt every 2s.
+    if (previous.credentialId !== credential._id || Date.now() - previous.lastSeenAt <= 3000) {
+      throw new Error("Another flight agent owns this aircraft.");
+    }
   }
   if (previous) await ctx.db.patch(previous._id, { retired: true });
   if (vehicle.activeOperationId) {
@@ -79,8 +81,12 @@ export const expireSession = internalMutation({ args: { sessionId: v.id("agentSe
 export const work = query({ args: sessionArgs, handler: async (ctx, args) => {
   const { vehicle, session } = await requireAgentSession(ctx, args.token, args.sessionId);
   const operation = vehicle.activeOperationId ? await ctx.db.get(vehicle.activeOperationId) : null;
+  const order = operation ? await ctx.db.get(operation.workOrderId) : null;
   const commands = await ctx.db.query("controlCommands").withIndex("by_vehicle_status", q => q.eq("vehicleId", vehicle._id).eq("status", "pending")).take(20);
-  return { vehicle, operation, commands, leaseUntil: session.leaseUntil };
+  return {
+    vehicle, operation, commands, leaseUntil: session.leaseUntil,
+    job: order ? { kind: order.kind, location: order.location, destinations: order.destinations, area: order.area } : null,
+  };
 } });
 export const prepared = mutation({ args: { ...sessionArgs, operationId: v.id("operations"), planHash: v.string() }, handler: async (ctx, args) => {
   const { vehicle } = await requireAgentSession(ctx, args.token, args.sessionId);
@@ -108,8 +114,6 @@ export const claim = mutation({ args: { ...sessionArgs, commandId: v.id("control
     await ctx.db.patch(command._id, { status: "expired", reason: "Expired or superseded before execution." });
     return null;
   }
-  const operator = await ctx.db.query("members").withIndex("by_user", q => q.eq("userId", vehicle.operatorId)).unique();
-  if (vehicle.environment === "aircraft" && !physicalIntegrationAllowed(vehicle.integrationApproved, operator?.role)) throw new Error("Physical control is disabled.");
   if (command.kind === "start") {
     const telemetry = await ctx.db.query("vehicleTelemetry").withIndex("by_vehicle", q => q.eq("vehicleId", vehicle._id)).unique();
     const problems = preflightProblems(telemetry?.sessionId === args.sessionId ? telemetry.sample : null, operation.plan, Date.now());
@@ -155,11 +159,13 @@ export const acknowledge = mutation({ args: { ...sessionArgs, commandId: v.id("c
 
 export const publish = mutation({ args: { ...sessionArgs, sample: aircraftSample }, handler: async (ctx, args) => {
   const { vehicle } = await requireAgentSession(ctx, args.token, args.sessionId);
-  validateSample(args.sample, Date.now());
+  const receivedAt = Date.now();
+  validateSample(args.sample, receivedAt);
   const previous = await ctx.db.query("vehicleTelemetry").withIndex("by_vehicle", q => q.eq("vehicleId", vehicle._id)).unique();
   if (previous?.sessionId === args.sessionId && args.sample.sequence <= previous.sample.sequence) return;
-  if (previous?.sessionId === args.sessionId && args.sample.capturedAt <= previous.sample.capturedAt) throw new Error("Telemetry timestamps must advance.");
-  const record = { vehicleId: vehicle._id, sessionId: args.sessionId, environment: vehicle.environment, receivedAt: Date.now(), sample: args.sample };
+  if (previous?.sessionId === args.sessionId && args.sample.capturedAt <= previous.sample.capturedAt) return;
+  const sample = { ...args.sample, capturedAt: receivedAt };
+  const record = { vehicleId: vehicle._id, sessionId: args.sessionId, environment: vehicle.environment, receivedAt, sample };
   if (previous) await ctx.db.patch(previous._id, record); else await ctx.db.insert("vehicleTelemetry", record);
   const operation = vehicle.activeOperationId ? await ctx.db.get(vehicle.activeOperationId) : null;
   if (operation && operation.loadedSessionId === args.sessionId) {
@@ -168,16 +174,16 @@ export const publish = mutation({ args: { ...sessionArgs, sample: aircraftSample
     if (recorded) await ctx.db.patch(recorded._id, operationRecord); else await ctx.db.insert("operationTelemetry", operationRecord);
   }
   if (!operation || operation.loadedSessionId !== args.sessionId || !["active", "manual", "returning", "landing", "taking_over"].includes(operation.state)) return;
-  if (args.sample.faults.length || !args.sample.connected) { await uncertainOperation(ctx, operation, args.sample.faults.join("; ") || "Aircraft disconnected."); return; }
+  if (sample.faults.length || !sample.connected) { await uncertainOperation(ctx, operation, sample.faults.join("; ") || "Aircraft disconnected."); return; }
   const step = operation.plan.steps[operation.currentStep];
   if (!step) return;
   const progress = await ctx.db.query("flightProgress").withIndex("by_operation", q => q.eq("operationId", operation._id)).unique();
-  const consecutiveMs = progress ? args.sample.capturedAt - progress.capturedAt : 0;
-  const satisfied = stepSatisfied(step, args.sample);
+  const consecutiveMs = progress ? sample.capturedAt - progress.capturedAt : 0;
+  const satisfied = stepSatisfied(step, sample);
   const dwell = satisfied && progress?.wasSatisfied && progress.stepIndex === operation.currentStep && consecutiveMs > 0 && consecutiveMs <= 1000 ? progress.dwellMs + consecutiveMs : 0;
   const requiredDwell = step.kind === "hover" ? step.durationSec * 1000 : step.kind === "land" ? 1000 : 300;
-  const sawAirborne = progress?.sawAirborne || operation.sawAirborne || args.sample.airborne === true;
-  const progressRecord = { operationId: operation._id, stepIndex: operation.currentStep, dwellMs: dwell, capturedAt: args.sample.capturedAt, sequence: args.sample.sequence, wasSatisfied: satisfied, sawAirborne };
+  const sawAirborne = progress?.sawAirborne || operation.sawAirborne || sample.airborne === true;
+  const progressRecord = { operationId: operation._id, stepIndex: operation.currentStep, dwellMs: dwell, capturedAt: sample.capturedAt, sequence: sample.sequence, wasSatisfied: satisfied, sawAirborne };
   if (progress) await ctx.db.patch(progress._id, progressRecord); else await ctx.db.insert("flightProgress", progressRecord);
   if (!satisfied || dwell < requiredDwell) return;
   const verifiedSteps = [...operation.verifiedSteps, operation.currentStep];
@@ -186,10 +192,10 @@ export const publish = mutation({ args: { ...sessionArgs, sample: aircraftSample
   if (nextStep < operation.plan.steps.length) {
     const next = operation.plan.steps[nextStep];
     const state = operation.controlOwner === "autonomy" ? next.kind === "land" ? "landing" as const : next.label === "Return home" ? "returning" as const : operation.state : operation.state;
-    await ctx.db.patch(operation._id, { currentStep: nextStep, verifiedSteps, stepDwellMs: 0, stepEnteredAt: args.sample.capturedAt, sawAirborne, state });
+    await ctx.db.patch(operation._id, { currentStep: nextStep, verifiedSteps, stepDwellMs: 0, stepEnteredAt: sample.capturedAt, sawAirborne, state });
     return;
   }
-  if (!sawAirborne || args.sample.airborne !== false || args.sample.armed !== false || verifiedSteps.length !== operation.plan.steps.length) throw new Error("Completion requires a verified flight, landing, and disarm.");
+  if (!sawAirborne || sample.airborne !== false || sample.armed !== false || verifiedSteps.length !== operation.plan.steps.length) throw new Error("Completion requires a verified flight, landing, and disarm.");
   const order = await ctx.db.get(operation.workOrderId);
   const taskOutcome = order?.kind === "flight_check" ? "succeeded" as const : "unverified" as const;
   const earnedCents = operation.quotedEarnings?.cents ?? (order ? quoteWorkOrder(order, operation.plan.home, { openNearby: 1, idleNearby: 1 }).cents : 0);

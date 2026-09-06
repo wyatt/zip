@@ -2,7 +2,7 @@ import { areaGeometry } from "../lib/areas";
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import type { Doc } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { requireCustomer, requireOperator, hashSecret } from "./access";
 import { controlMode, environment, geo, jobKind, surveyArea } from "./operationsSchema";
 import { assertGeo, createFlightPlan, serializeFlightPlan, matchesRequirements, metersBetween, missionProgressPct, requiredCapabilities, WAITING_FLEET_RADIUS_M, type GeoPoint } from "../lib/operations";
@@ -64,6 +64,11 @@ export const submit = mutation({ args: { title: v.string(), description: v.strin
   assertGeo(args.location);
   if (args.destinations.length > 50) throw new Error("At most 50 waypoints are allowed.");
   args.destinations.forEach(assertGeo);
+  if (args.kind === "deliver") {
+    const dropoff = args.destinations.at(-1);
+    if (!dropoff) throw new Error("Choose pickup A and drop-off B.");
+    if (metersBetween(args.location, dropoff) < 10) throw new Error("Pickup and delivery must be at least 10 m apart.");
+  }
   if (!Number.isFinite(args.payloadKg) || args.payloadKg < 0 || args.payloadKg > 25) throw new Error("Invalid payload weight.");
   if (args.area && !["search", "inspection"].includes(args.kind)) throw new Error("An area is only supported for search and inspection.");
   const geometry = args.area ? areaGeometry(args.area) : null;
@@ -156,3 +161,37 @@ export const cancel = mutation({ args: { workOrderId: v.id("workOrders") }, hand
   if (order.status !== "open") throw new Error("An assigned operation must be resolved by the operator.");
   await ctx.db.patch(workOrderId, { status: "cancelled", updatedAt: Date.now() });
 } });
+export const remove = mutation({
+  args: { workOrderId: v.id("workOrders") },
+  returns: v.null(),
+  handler: async (ctx, { workOrderId }) => {
+    await requireOperator(ctx);
+    await deleteWorkOrder(ctx, workOrderId);
+    return null;
+  },
+});
+
+async function deleteWorkOrder(ctx: MutationCtx, workOrderId: Id<"workOrders">) {
+  const order = await ctx.db.get(workOrderId);
+  if (!order) throw new Error("Request not found.");
+  if (order.operationId) await deleteOperationRecords(ctx, order.operationId);
+  await ctx.db.delete(workOrderId);
+}
+
+async function deleteOperationRecords(ctx: MutationCtx, operationId: Id<"operations">) {
+  const operation = await ctx.db.get(operationId);
+  if (!operation) return;
+  for (const command of await ctx.db.query("controlCommands").withIndex("by_operation", q => q.eq("operationId", operationId)).take(200)) await ctx.db.delete(command._id);
+  for (const event of await ctx.db.query("operationEvents").withIndex("by_operation", q => q.eq("operationId", operationId)).take(200)) await ctx.db.delete(event._id);
+  const telemetry = await ctx.db.query("operationTelemetry").withIndex("by_operation", q => q.eq("operationId", operationId)).unique();
+  if (telemetry) await ctx.db.delete(telemetry._id);
+  const progress = await ctx.db.query("flightProgress").withIndex("by_operation", q => q.eq("operationId", operationId)).unique();
+  if (progress) await ctx.db.delete(progress._id);
+  const camera = await ctx.db.query("cameraSessions").withIndex("by_operation", q => q.eq("operationId", operationId)).unique();
+  if (camera) await ctx.db.delete(camera._id);
+  const vehicle = await ctx.db.get(operation.vehicleId);
+  if (vehicle?.activeOperationId === operationId) await ctx.db.patch(vehicle._id, { available: true, activeOperationId: undefined });
+  const profile = await ctx.db.query("operatorProfiles").withIndex("by_user", q => q.eq("userId", operation.operatorId)).unique();
+  if (profile?.activeOperationId === operationId) await ctx.db.patch(profile._id, { activeOperationId: undefined });
+  await ctx.db.delete(operationId);
+}

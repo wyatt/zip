@@ -1,4 +1,4 @@
-import type { AircraftSample, Capability, ControlOwner, Environment, GeoPoint } from "../lib/operations";
+import type { AircraftSample, Capability, ControlOwner, Environment, FlightPlan, GeoPoint, PlanStep } from "../lib/operations";
 
 /** The image's primitive contract is implemented with measured geographic steps.
  * FlightPlan/PlanStep is the single executable mission format used by the server
@@ -27,7 +27,7 @@ export type CommandAcknowledgment = {
   reason?: string;
 };
 export type CapturedImage = { bytes: Uint8Array; mimeType: "image/jpeg" | "image/png"; capturedAt: number };
-export type CameraStream = { protocol: "whep" | "hls"; url: string; expiresAt: number };
+export type CameraStream = { protocol: "whep" | "hls" | "mjpeg"; url: string; expiresAt: number };
 
 export interface DroneAdapter {
   connect(): Promise<AdapterIdentity>;
@@ -49,6 +49,8 @@ export interface DroneAdapter {
   onTelemetry(listener: (sample: AircraftSample) => void): () => void;
   captureImage?(context: CommandContext): Promise<CapturedImage>;
   openCameraStream?(): Promise<CameraStream>;
+  beginRegionalTask?(step: PlanStep, plan: FlightPlan, context: CommandContext): Promise<CommandAcknowledgment>;
+  setJob?(job: { kind: string; location: GeoPoint; destinations: GeoPoint[]; area?: { northWest: GeoPoint; southEast: GeoPoint } } | null): void;
   /** Local safety action independent of Convex. Must be implemented and tested per aircraft. */
   handleLinkLoss(reason: string): Promise<void>;
 }

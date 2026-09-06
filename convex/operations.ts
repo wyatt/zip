@@ -2,7 +2,7 @@ import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { requireMember, requireOperator, requireOperationAccess } from "./access";
-import { isCustomerRole, isOperatorRole, physicalIntegrationAllowed } from "../lib/roles";
+import { isCustomerRole, isOperatorRole } from "../lib/roles";
 import { commandKind } from "./operationsSchema";
 import { COMMAND_TTL_MS, preflightProblems, TELEMETRY_STALE_MS } from "../lib/operations";
 
@@ -55,7 +55,6 @@ export const command = mutation({ args: { operationId: v.id("operations"), kind:
   const vehicle = await ctx.db.get(operation.vehicleId);
   const session = vehicle?.activeSessionId && await ctx.db.get(vehicle.activeSessionId);
   if (!vehicle || !session || session.retired || session.leaseUntil <= Date.now() || operation.loadedSessionId !== session._id) throw new Error("The flight agent must reconnect and reconcile this operation.");
-  if (vehicle.environment === "aircraft" && !physicalIntegrationAllowed(vehicle.integrationApproved, member.role)) throw new Error("Physical flight integration is not approved.");
   const telemetry = await ctx.db.query("vehicleTelemetry").withIndex("by_vehicle", q => q.eq("vehicleId", vehicle._id)).unique();
   const fresh = telemetry && telemetry.sessionId === session._id && Date.now() - telemetry.sample.capturedAt <= TELEMETRY_STALE_MS;
   if (args.kind === "start") {

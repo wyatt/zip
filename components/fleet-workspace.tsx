@@ -9,11 +9,10 @@ import { Reload } from "pixelarticons/react/Reload";
 import { Trash } from "pixelarticons/react/Trash";
 import type { Id } from "@/convex/_generated/dataModel";
 import { CapabilityIcon } from "./capability-icon";
-import { SESSION_LEASE_MS, type Environment } from "@/lib/operations";
+import { SESSION_LEASE_MS } from "@/lib/operations";
 import {
   DRONE_TYPES,
   OPTIONAL_TAGS,
-  SIMULATOR_CAPABILITIES,
   capabilitiesFromTags,
   droneTypeById,
   droneTypeByModel,
@@ -455,7 +454,7 @@ function AddAircraftModal({
   onSubmit: (input: {
     name: string;
     hardwareId: string;
-    environment: Environment;
+    environment: "aircraft";
     capabilities: ReturnType<typeof capabilitiesFromTags>;
     model: string;
     serviceRadiusM: number;
@@ -467,7 +466,6 @@ function AddAircraftModal({
   }) => Promise<void>;
 }) {
   const [typeId, setTypeId] = useState(DRONE_TYPES[0].id);
-  const [environment, setEnvironment] = useState<Environment>("aircraft");
   const [tags, setTags] = useState<OptionalTag[]>([...DRONE_TYPES[0].tags]);
   const [payloadKg, setPayloadKg] = useState(DRONE_TYPES[0].payloadKg ?? 1);
   const [cameraMp, setCameraMp] = useState(DRONE_TYPES[0].cameraMp ?? 12);
@@ -556,109 +554,86 @@ function AddAircraftModal({
           onSubmit={async (event) => {
             event.preventDefault();
             const data = new FormData(event.currentTarget);
-            const payload =
-              environment === "simulated"
-                ? 0
-                : tags.includes("payload")
-                  ? payloadKg
-                  : 0;
+            const payload = tags.includes("payload") ? payloadKg : 0;
             const range = Number(data.get("maxRange"));
             const site = sites.find((entry) => entry.name === String(data.get("launchSite")));
             if (!site) throw new Error("Save launch sites in account settings before registering an aircraft.");
             await onSubmit({
               name,
               hardwareId: generateHardwareId(type.id),
-              environment,
-              capabilities:
-                environment === "simulated"
-                  ? SIMULATOR_CAPABILITIES
-                  : capabilitiesFromTags(tags),
+              environment: "aircraft",
+              capabilities: capabilitiesFromTags(tags),
               model: type.label,
               serviceRadiusM: range,
-              maxPayloadKg: environment === "simulated" ? 25 : payload,
-              ...(environment === "aircraft" && tags.includes("camera") ? { cameraMp } : {}),
+              maxPayloadKg: payload,
+              ...(tags.includes("camera") ? { cameraMp } : {}),
               launchSiteId: site.id,
               launchSiteName: site.name,
               maxRadiusM: range,
             });
           }}
         >
-          <label>
-            Environment
-            <select
-              aria-label="Environment"
-              value={environment}
-              onChange={(e) => setEnvironment(e.target.value as Environment)}
-            >
-              <option value="simulated">Local simulator</option>
-              <option value="aircraft">
-                Physical aircraft — integration required
-              </option>
-            </select>
-          </label>
-          {environment === "aircraft" && (
-            <fieldset className="attr-fieldset">
-              <legend>Attributes</legend>
-              <div className="attr-stack">
-                {OPTIONAL_TAGS.map((tag) => {
-                  const on = tags.includes(tag.id);
-                  return (
-                    <div className={on ? "attr-row on" : "attr-row"} key={tag.id}>
-                      <button
-                        type="button"
-                        className={on ? "tag on" : "tag"}
-                        aria-pressed={on}
-                        disabled={type.known}
-                        onClick={() => {
-                          if (type.known) return;
-                          setTags((current) =>
-                            current.includes(tag.id)
-                              ? current.filter((id) => id !== tag.id)
-                              : [...current, tag.id],
-                          );
-                        }}
-                      >
-                        <CapabilityIcon id={tag.id} />
-                        {tag.label}
-                      </button>
-                      {on && tag.id === "camera" && (
-                        <input
-                          className="attr-input"
-                          name="cameraMp"
-                          aria-label="Resolution (MP)"
-                          type="number"
-                          min={0.1}
-                          max={200}
-                          step={0.1}
-                          value={cameraMp}
-                          placeholder="Resolution (MP)"
-                          readOnly={type.known}
-                          required
-                          onChange={(event) => setCameraMp(Number(event.target.value))}
-                        />
-                      )}
-                      {on && tag.id === "payload" && (
-                        <input
-                          className="attr-input"
-                          name="payload"
-                          aria-label="Maximum payload (kg)"
-                          type="number"
-                          min={0}
-                          max={25}
-                          step={0.1}
-                          value={payloadKg}
-                          placeholder="Maximum payload (kg)"
-                          readOnly={type.known}
-                          required
-                          onChange={(event) => setPayloadKg(Number(event.target.value))}
-                        />
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </fieldset>
-          )}
+          <fieldset className="attr-fieldset">
+            <legend>Attributes</legend>
+            <div className="attr-stack">
+              {OPTIONAL_TAGS.map((tag) => {
+                const on = tags.includes(tag.id);
+                return (
+                  <div className={on ? "attr-row on" : "attr-row"} key={tag.id}>
+                    <button
+                      type="button"
+                      className={on ? "tag on" : "tag"}
+                      aria-pressed={on}
+                      disabled={type.known}
+                      onClick={() => {
+                        if (type.known) return;
+                        setTags((current) =>
+                          current.includes(tag.id)
+                            ? current.filter((id) => id !== tag.id)
+                            : [...current, tag.id],
+                        );
+                      }}
+                    >
+                      <CapabilityIcon id={tag.id} />
+                      {tag.label}
+                    </button>
+                    {on && tag.id === "camera" && (
+                      <input
+                        className="attr-input"
+                        name="cameraMp"
+                        aria-label="Resolution (MP)"
+                        type="number"
+                        min={0.1}
+                        max={200}
+                        step={0.1}
+                        value={cameraMp}
+                        placeholder="Resolution (MP)"
+                        readOnly={type.known}
+                        required
+                        onChange={(event) => setCameraMp(Number(event.target.value))}
+                      />
+                    )}
+                    {on && tag.id === "payload" && (
+                      <input
+                        className="attr-input"
+                        name="payload"
+                        aria-label="Maximum payload (kg)"
+                        type="number"
+                        min={0}
+                        max={25}
+                        step={0.1}
+                        value={payloadKg}
+                        placeholder="Maximum payload (kg)"
+                        readOnly={type.known}
+                        required
+                        onChange={(event) => setPayloadKg(Number(event.target.value))}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </fieldset>
           {sites.length === 0 ? (
             <p className="muted">
               Save launch sites in <a href="/settings">account settings</a> before registering an aircraft.

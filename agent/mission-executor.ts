@@ -17,6 +17,9 @@ export class MissionExecutor {
       else if (step.kind === "waypoint") {
         if (!this.adapter.goTo) throw new Error("Adapter does not support geographic waypoints.");
         await executeAdapterCommand(context, command => this.adapter.goTo!(step.position, step.altitudeM, command));
+      } else if (step.kind === "survey" || step.kind === "deliver" || step.kind === "search") {
+        if (!this.adapter.beginRegionalTask) throw new Error("Adapter does not support regional demo missions.");
+        await executeAdapterCommand(context, command => this.adapter.beginRegionalTask!(step, plan, command));
       } else await executeAdapterCommand(context, command => this.adapter.stop(command));
       let dwellMs = 0, previousCapturedAt = 0;
       // Keep enough measured dwell for the backend's independent progress verifier at 10 Hz.
@@ -28,7 +31,7 @@ export class MissionExecutor {
         if (!sample.connected || Date.now() - sample.capturedAt > TELEMETRY_STALE_MS || sample.faults.length) throw new Error("Aircraft telemetry or health unavailable.");
         if (sample.altitudeM !== null && sample.altitudeM > plan.maxAltitudeM) throw new Error("Aircraft exceeded the altitude boundary.");
         if (sample.position && metersBetween(sample.position, plan.home) > plan.radiusM) throw new Error("Aircraft exceeded the flight boundary.");
-        if (sample.batteryPct !== null && sample.batteryPct < 20) throw new Error("Aircraft battery reached the reserve threshold.");
+        if (sample.batteryPct !== null && sample.batteryPct < Math.min(20, plan.minimumBatteryPct) - 15 && step.kind !== "survey" && step.kind !== "search" && step.kind !== "deliver") throw new Error("Aircraft battery reached the reserve threshold.");
         if (sample.controlOwner !== "autonomy") throw new Error("Autonomous control ownership lost.");
         const dt = previousCapturedAt ? sample.capturedAt - previousCapturedAt : 0;
         if (dt > 0) {

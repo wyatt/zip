@@ -7,3 +7,12 @@ node_modules/
 test-results/
 playwright-report/
 .DS_Store
+data/terrain-cache/
+data/ithaca-region/
+data/.iris-agent-instance
+data/ithaca-acquire.log
+.tools/
+.micromamba/
+Drone_Simulation/.conda/
+Drone_Simulation/outputs/
+Drone_Simulation/viewer/public/region/

@@ -165,7 +165,7 @@
   border-bottom: 3px solid var(--ink);
 }
 .link-banner.online {
-  background: var(--ink);
+  background: #2fbf4a;
   color: #fff;
 }
 .link-banner.offline {

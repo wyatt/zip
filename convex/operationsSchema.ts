@@ -12,7 +12,7 @@ export const controlOwner = v.union(v.literal("none"), v.literal("autonomy"), v.
 export const operationState = v.union(...(["assigned", "ready", "starting", "active", "taking_over", "manual", "returning", "landing", "completed", "cancelled", "attention"] as const).map(v.literal));
 export const commandKind = v.union(...(["start", "takeover", "hold", "return", "land"] as const).map(v.literal));
 export const earningsQuote = v.object({ cents: v.number(), surgeX: v.number(), deadheadM: v.number(), taskM: v.number(), areaM2: v.number() });
-export const planStep = v.object({ kind: v.union(v.literal("takeoff"), v.literal("waypoint"), v.literal("hover"), v.literal("land")), label: v.string(), position: geo, altitudeM: v.number(), durationSec: v.number() });
+export const planStep = v.object({ kind: v.union(v.literal("takeoff"), v.literal("waypoint"), v.literal("hover"), v.literal("land"), v.literal("survey"), v.literal("deliver"), v.literal("search")), label: v.string(), position: geo, altitudeM: v.number(), durationSec: v.number() });
 export const flightPlan = v.object({ version: v.number(), home: geo, mode: controlMode, steps: v.array(planStep), cruiseSpeedMps: v.number(), maxAltitudeM: v.number(), radiusM: v.number(), maxDurationSec: v.number(), minimumBatteryPct: v.number() });
 const measurement = v.union(v.number(), v.null());
 const boolMeasurement = v.union(v.boolean(), v.null());
@@ -21,6 +21,14 @@ export const aircraftSample = v.object({
   batteryPct: measurement, headingDeg: measurement, speedMps: measurement, connected: v.boolean(),
   armed: boolMeasurement, airborne: boolMeasurement, navigationHealthy: v.boolean(), controlOwner,
   flightMode: v.string(), faults: v.array(v.string()),
+  mission: v.optional(v.object({
+    mode: v.union(v.literal("search"), v.literal("inspection"), v.literal("deliver")),
+    phase: v.string(), elapsed: v.number(), battery: v.number(), predictedArrivalBattery: v.number(),
+    photos: v.number(), totalPhotos: v.number(), sorties: v.number(), returns: v.number(),
+    multiplier: v.number(), distance: v.number(), reason: v.string(), terrainKey: v.string(),
+    result: v.optional(v.object({ type: v.string(), lat: v.number(), lon: v.number(), foundAt: v.number() })),
+    path: v.optional(v.array(geo)),
+  })),
 });
 
 /** Additive tables preserve legacy demo data without assigning anonymous jobs to real users. */
@@ -38,6 +46,6 @@ export const operationsTables = {
   operationTelemetry: defineTable({ operationId: v.id("operations"), vehicleId: v.id("vehicles"), sessionId: v.id("agentSessions"), environment, receivedAt: v.number(), sample: aircraftSample }).index("by_operation", ["operationId"]),
   flightProgress: defineTable({ operationId: v.id("operations"), stepIndex: v.number(), dwellMs: v.number(), capturedAt: v.number(), sequence: v.number(), wasSatisfied: v.boolean(), sawAirborne: v.boolean() }).index("by_operation", ["operationId"]),
   operationEvents: defineTable({ operationId: v.id("operations"), actor: v.string(), kind: v.string(), message: v.string(), timestamp: v.number(), commandId: v.optional(v.id("controlCommands")) }).index("by_operation", ["operationId"]),
-  cameraSessions: defineTable({ operationId: v.id("operations"), vehicleId: v.id("vehicles"), sessionId: v.id("agentSessions"), protocol: v.union(v.literal("hls"), v.literal("whep")), url: v.string(), expiresAt: v.number() }).index("by_operation", ["operationId"]),
+  cameraSessions: defineTable({ operationId: v.id("operations"), vehicleId: v.id("vehicles"), sessionId: v.id("agentSessions"), protocol: v.union(v.literal("hls"), v.literal("whep"), v.literal("mjpeg")), url: v.string(), expiresAt: v.number() }).index("by_operation", ["operationId"]),
   manualTickets: defineTable({ operationId: v.id("operations"), vehicleId: v.id("vehicles"), sessionId: v.id("agentSessions"), operatorId: v.id("users"), generation: v.number(), tokenHash: v.string(), expiresAt: v.number(), consumedAt: v.optional(v.number()) }).index("by_hash", ["tokenHash"]),
 };

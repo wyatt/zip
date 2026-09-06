@@ -13,8 +13,10 @@ test("unsupported navigation is rejected before preparing a plan", async () => {
   const identity = await adapter.connect();
   const plan = createFlightPlan({ kind: "inspection", location: home, destinations: [home], home, mode: "autonomous", altitudeM: 3, hoverSec: 5, maxRadiusM: 100 });
   expect(() => validateAdapterPlan(plan, identity, adapter)).not.toThrow();
+  const waypointPlan = createFlightPlan({ kind: "flight_check", location: home, destinations: [], home, mode: "autonomous", altitudeM: 3, hoverSec: 5, maxRadiusM: 100 });
+  waypointPlan.steps[1] = { kind: "waypoint", label: "Go to site", position: home, altitudeM: 3, durationSec: 0 };
   Object.defineProperty(adapter, "goTo", { value: undefined });
-  expect(() => validateAdapterPlan(plan, identity, adapter)).toThrow("geographic waypoints");
+  expect(() => validateAdapterPlan(waypointPlan, identity, adapter)).toThrow("geographic waypoints");
   await adapter.disconnect();
 });
 test("adapter emits idle telemetry, rejects stale generations, and holds when velocity expires", async () => {
@@ -40,6 +42,27 @@ test("adapter emits idle telemetry, rejects stale generations, and holds when ve
   await expect(adapter.move(1, 0, 0, 0, context("stale", 1))).rejects.toThrow("generation");
   await adapter.land(context("land", 2)); await vi.advanceTimersByTimeAsync(3500);
   expect((await adapter.getTelemetry()).armed).toBe(false);
+  await adapter.disconnect();
+});
+test("external regional samples keep idle telemetry fresh", async () => {
+  vi.useFakeTimers();
+  const adapter = new SimulatedDrone("external-test", home);
+  await adapter.connect();
+  adapter.lockExternal();
+  const before = await adapter.getTelemetry();
+  await vi.advanceTimersByTimeAsync(500);
+  const after = await adapter.getTelemetry();
+  expect(after.sequence).toBeGreaterThan(before.sequence);
+  expect(after.capturedAt).toBeGreaterThan(before.capturedAt);
+  adapter.applyExternalSample({
+    ...after,
+    sequence: after.sequence + 1,
+    capturedAt: Date.now(),
+    flightMode: "survey",
+    mission: { mode: "inspection", phase: "survey", elapsed: 1, battery: 90, predictedArrivalBattery: 80, photos: 1, totalPhotos: 8, sorties: 1, returns: 0, multiplier: 70, distance: 12, reason: "", terrainKey: "ithaca5km" },
+  });
+  expect((await adapter.getTelemetry()).flightMode).toBe("survey");
+  adapter.releaseExternal();
   await adapter.disconnect();
 });
 test("local link-loss action lands autonomy without any cloud publication", async () => {

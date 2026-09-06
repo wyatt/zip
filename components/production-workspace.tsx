@@ -13,25 +13,30 @@ import {
   metersBetween,
   operationStatusPending,
   preflightProblems,
+  previewAcceptedFlight,
   remainingFlightSec,
   type CommandKind,
   type ControlMode,
   type Environment,
   type GeoPoint,
+  type RoutePoint,
   type RequestKind,
 } from "@/lib/operations";
 import { formatSurge, formatUsd, quoteWorkOrder } from "@/lib/pricing";
 import { AuthGate, type Account } from "./auth-gate";
 import { AppShell } from "./app-shell";
 import { FlightMap } from "./flight-map";
-import { useTelemetryPlayback } from "./telemetry-playback";
+import { JobViewer } from "./job-viewer";
 import type { AircraftSample } from "@/lib/operations";
 import { ComputerControls } from "./computer-controls";
 import { areaGeometry, surveyArea, type SurveyArea } from "@/lib/areas";
 import { CameraPanel } from "./camera-panel";
+import { clock, DEMO_PHASE_LABELS } from "@/lib/mission-snapshot";
 import { OperatorSplit } from "./operator-split";
 import { FALLBACK_LOCATION, useBrowserLocation } from "./use-browser-location";
+import { useRegionalAcceptPreview } from "./use-regional-preview";
 import { DRONE_TYPES, droneTypeByModel } from "@/lib/aircraft";
+import { ITHACA_HOME } from "@/lib/ithaca";
 import { ArrowLeft } from "pixelarticons/react/ArrowLeft";
 import { Trash } from "pixelarticons/react/Trash";
 
@@ -86,6 +91,21 @@ function offsetPoint(point: GeoPoint, northM: number, eastM = 0): GeoPoint {
     lon: point.lon + eastM / (111320 * Math.cos((point.lat * Math.PI) / 180)),
   };
 }
+function jobPreviewPath(order: {
+  location: GeoPoint;
+  destinations: GeoPoint[];
+  area?: SurveyArea;
+}): RoutePoint[] {
+  if (order.area) return order.destinations;
+  return previewAcceptedFlight({
+    kind: "deliver",
+    location: order.location,
+    destinations: order.destinations,
+    home: order.location,
+    altitudeM: 0,
+    hoverSec: 0,
+  }).path;
+}
 function workOrderStatus(status: string) {
   if (status === "open") return "Finding an operator";
   if (status === "assigned") return "In progress";
@@ -137,6 +157,7 @@ function CustomerWorkspace() {
     orders?.find((order) => order._id === selectedId) ??
     orders?.find((order) => order.operationId === operationId);
   const isAreaJob = kind === "search" || kind === "inspection";
+  const isDelivery = kind === "deliver";
   const mode =
     REQUEST_MODES.find((item) => item.kind === kind) ?? REQUEST_MODES[0]!;
   useEffect(() => {
@@ -151,9 +172,9 @@ function CustomerWorkspace() {
     if (selected?.operationId) selectOperation(selected.operationId);
   }, [selected?.operationId]);
   useEffect(() => {
-    if (!fromBrowser || location || isAreaJob || page !== "compose") return;
+    if (!fromBrowser || location || isAreaJob || isDelivery || page !== "compose") return;
     setLocation(here);
-  }, [fromBrowser, here, location, isAreaJob, page]);
+  }, [fromBrowser, here, location, isAreaJob, isDelivery, page]);
   const area =
     isAreaJob && firstCorner && secondCorner
       ? surveyArea(firstCorner, secondCorner)
@@ -167,8 +188,21 @@ function CustomerWorkspace() {
       areaError = messageOf(caught);
     }
   }
+  const { preview: deliveryPreview, planning: planningDelivery, error: deliveryPlanError } =
+    useRegionalAcceptPreview(
+      page === "compose" && isDelivery && firstCorner && secondCorner
+        ? {
+            kind: "deliver",
+            home: firstCorner,
+            location: firstCorner,
+            destinations: [secondCorner],
+            altitudeM: 3,
+            hoverSec: 10,
+          }
+        : null,
+    );
   const chooseLocation = (point: GeoPoint) => {
-    if (!isAreaJob) {
+    if (!isAreaJob && !isDelivery) {
       setLocation(point);
       return;
     }
@@ -330,19 +364,21 @@ function CustomerWorkspace() {
               <form
                 onSubmit={async (event) => {
                   event.preventDefault();
-                  if (!location || (isAreaJob && !geometry)) return;
+                  if (!location || (isAreaJob && !geometry) || (isDelivery && !secondCorner)) return;
                   const data = new FormData(event.currentTarget);
                   setBusy(true);
                   setError("");
                   try {
+                    const pickup = firstCorner ?? location;
+                    const dropoff = secondCorner ?? location;
                     const id = await submit({
                       title: String(data.get("title")),
                       description: String(data.get("description")),
                       kind,
                       environment: "aircraft",
-                      location: geometry?.center ?? location,
+                      location: geometry?.center ?? pickup,
                       ...(area ? { area } : {}),
-                      destinations: geometry?.destinations ?? [location],
+                      destinations: geometry?.destinations ?? (isDelivery ? [dropoff] : [location]),
                       payloadKg:
                         kind === "deliver" ? Number(data.get("payload")) : 0,
                       altitudeM: Number(data.get("altitude")),
@@ -380,7 +416,7 @@ function CustomerWorkspace() {
                     rows={3}
                     placeholder={
                       kind === "deliver"
-                        ? "Package details and drop-off notes"
+                        ? "Package details, pickup notes, and drop-off instructions"
                         : kind === "search"
                           ? "Who or what should the operator look for?"
                           : "What should be inspected?"
@@ -388,28 +424,8 @@ function CustomerWorkspace() {
                   />
                 </label>
                 <div className="coordinates">
-                  <label>
-                    Altitude (m)
-                    <input
-                      name="altitude"
-                      type="number"
-                      min={2}
-                      max={30}
-                      defaultValue={3}
-                      required
-                    />
-                  </label>
-                  <label>
-                    Hover (s)
-                    <input
-                      name="hover"
-                      type="number"
-                      min={5}
-                      max={120}
-                      defaultValue={10}
-                      required
-                    />
-                  </label>
+                  <input name="altitude" type="hidden" value="3" />
+                  <input name="hover" type="hidden" value="10" />
                 </div>
                 {kind === "deliver" && (
                   <label>
@@ -424,6 +440,63 @@ function CustomerWorkspace() {
                       required
                     />
                   </label>
+                )}
+                {isDelivery && (
+                  <fieldset>
+                    <legend>Pickup and drop-off</legend>
+                    <p className="muted">
+                      Place point A, then point B. The planner routes A → B,
+                      delivers at B, and returns to A.
+                    </p>
+                    <div className="location-choices">
+                      {(["first", "second"] as const).map((slot, index) => (
+                        <button
+                          key={slot}
+                          type="button"
+                          className={corner === slot ? "active" : ""}
+                          onClick={() => setCorner(slot)}
+                        >
+                          <span className="location-index">{index === 0 ? "A" : "B"}</span>
+                          <span>
+                            <strong>{slot === "first" ? "Pickup A" : "Drop-off B"}</strong>
+                            <small>
+                              {(slot === "first" ? firstCorner : secondCorner)
+                                ? "Selected · click to edit"
+                                : "Select on map"}
+                            </small>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                    <button
+                      type="button"
+                      className="text-button"
+                      onClick={() => {
+                        setFirstCorner(null);
+                        setSecondCorner(null);
+                        setLocation(null);
+                        setCorner("first");
+                      }}
+                    >
+                      Clear points
+                    </button>
+                    {firstCorner && secondCorner && (
+                      <p className="selection-summary">
+                        {Math.round(metersBetween(firstCorner, secondCorner))} m A → B
+                        {planningDelivery
+                          ? " · planning terrain route…"
+                          : deliveryPreview?.planned
+                            ? ` · ${formatDurationSec(deliveryPreview.durationSec)} terrain route`
+                            : " · straight-line preview"}
+                      </p>
+                    )}
+                    {deliveryPlanError && (
+                      <p className="muted" role="status">
+                        {deliveryPlanError} Showing A → B → A until a terrain
+                        route is available.
+                      </p>
+                    )}
+                  </fieldset>
                 )}
                 {isAreaJob && (
                   <fieldset>
@@ -485,11 +558,17 @@ function CustomerWorkspace() {
                     )}
                   </fieldset>
                 )}
-                {!isAreaJob && (
+                {!isAreaJob && !isDelivery && (
                   <p className="selection-summary">
                     {location
                       ? `${location.lat.toFixed(6)}, ${location.lon.toFixed(6)}`
                       : "Choose the job location on the map."}
+                  </p>
+                )}
+                {isDelivery && !secondCorner && (
+                  <p className="selection-summary">
+                    Choose point {corner === "first" ? "A (pickup)" : "B (drop-off)"} on
+                    the map.
                   </p>
                 )}
                 {isAreaJob && !geometry && (
@@ -500,7 +579,7 @@ function CustomerWorkspace() {
                 )}
                 <button
                   className="primary"
-                  disabled={busy || !location || (isAreaJob && !geometry)}
+                  disabled={busy || !location || (isAreaJob && !geometry) || (isDelivery && !secondCorner)}
                 >
                   {busy ? "Submitting…" : "Submit request"}
                   <span>↗</span>
@@ -516,10 +595,26 @@ function CustomerWorkspace() {
           map={
             <FlightMap
               chrome={false}
-              home={location ?? here}
-              selected={geometry?.center ?? location ?? undefined}
+              hideHome={isDelivery}
+              home={firstCorner ?? (isDelivery ? ITHACA_HOME : location ?? here)}
+              selected={isDelivery ? undefined : geometry?.center ?? location ?? undefined}
               area={area}
-              route={geometry?.destinations}
+              markers={
+                isDelivery
+                  ? [
+                      ...(firstCorner ? [{ label: "A", point: firstCorner }] : []),
+                      ...(secondCorner ? [{ label: "B", point: secondCorner }] : []),
+                    ]
+                  : undefined
+              }
+              route={
+                isDelivery
+                  ? (deliveryPreview?.path ??
+                    (firstCorner && secondCorner
+                      ? [firstCorner, secondCorner, firstCorner]
+                      : undefined))
+                  : geometry?.destinations
+              }
               onSelect={chooseLocation}
             />
           }
@@ -605,17 +700,24 @@ function spreadFleet(nearby: NearbyAircraft[]) {
     const type = droneTypeByModel(first.model ?? undefined);
     const stacked = group.length > 1;
     const thumbs = stacked
-      ? [...group.reduce((counts, vehicle) => {
-          const kind = droneTypeByModel(vehicle.model ?? undefined);
-          const key = kind.id;
-          const existing = counts.get(key);
-          if (existing) existing.count += 1;
-          else counts.set(key, { src: kind.src, label: kind.label, count: 1 });
-          return counts;
-        }, new Map<string, { src: string; label: string; count: number }>()).values()]
+      ? [
+          ...group
+            .reduce((counts, vehicle) => {
+              const kind = droneTypeByModel(vehicle.model ?? undefined);
+              const key = kind.id;
+              const existing = counts.get(key);
+              if (existing) existing.count += 1;
+              else
+                counts.set(key, { src: kind.src, label: kind.label, count: 1 });
+              return counts;
+            }, new Map<string, { src: string; label: string; count: number }>())
+            .values(),
+        ]
       : undefined;
     return {
-      id: stacked ? group.map((vehicle) => vehicle.vehicleId).join("-") : first.vehicleId,
+      id: stacked
+        ? group.map((vehicle) => vehicle.vehicleId).join("-")
+        : first.vehicleId,
       src: type.src,
       label: stacked
         ? `${group.length} aircraft`
@@ -630,13 +732,7 @@ function spreadFleet(nearby: NearbyAircraft[]) {
     };
   });
 }
-function JobArt({
-  src,
-  silhouette,
-}: {
-  src: string;
-  silhouette?: boolean;
-}) {
+function JobArt({ src, silhouette }: { src: string; silhouette?: boolean }) {
   return (
     <span className={`job-art${silhouette ? " silhouette" : ""}`} aria-hidden>
       <img src={src} alt="" />
@@ -649,6 +745,7 @@ function OperatorDashboardMap({
   order,
   operationId,
   highlightIds,
+  preview,
 }: {
   vehicles?: {
     _id: Id<"vehicles">;
@@ -665,6 +762,12 @@ function OperatorDashboardMap({
   };
   operationId: Id<"operations"> | null;
   highlightIds: Id<"vehicles">[];
+  preview?: {
+    home: GeoPoint;
+    position: GeoPoint;
+    path: RoutePoint[];
+    spriteSrc: string;
+  };
 }) {
   const details = useQuery(
     api.operations.details,
@@ -677,20 +780,45 @@ function OperatorDashboardMap({
   const highlighted = new Set(highlightIds);
   const liveId = details?.vehicle?._id;
   const livePos = telemetry?.sample?.position;
+  const home =
+    details?.operation.plan.home ??
+    preview?.home ??
+    order?.location ??
+    vehicles?.[0]?.home ??
+    here;
+  const area = order?.area ?? details?.order?.area;
+  if (order || operationId) {
+    return (
+      <JobViewer
+        home={home}
+        area={area}
+        sample={telemetry?.sample}
+        sessionId={telemetry?.sessionId}
+        destinations={
+          telemetry?.sample?.mission?.path ??
+          preview?.path ??
+          (order ? jobPreviewPath(order) : undefined)
+        }
+        previewPosition={preview?.position}
+        spriteSrc={
+          preview?.spriteSrc ??
+          droneTypeByModel(
+            details?.vehicle?.model ??
+              vehicles?.find((vehicle) => highlighted.has(vehicle._id))
+                ?.model ??
+              vehicles?.[0]?.model,
+          ).src
+        }
+      />
+    );
+  }
   return (
     <FlightMap
       chrome={false}
-      hideHome={!order && !details}
-      home={details?.operation.plan.home ?? order?.location ?? vehicles?.[0]?.home ?? here}
-      selected={order?.location}
-      area={order?.area ?? details?.order?.area}
-      route={
-        details
-          ? details.operation.plan.steps.map((step) => step.position)
-          : order?.area
-            ? order.destinations
-            : undefined
-      }
+      hideHome
+      home={home}
+      area={area}
+      route={telemetry?.sample?.mission?.path}
       fleet={spreadFleet(
         (vehicles ?? []).map((vehicle) => ({
           vehicleId: vehicle._id,
@@ -720,18 +848,11 @@ function WaitingMap({
     destinations: GeoPoint[];
   };
 }) {
-  const nearby = useQuery(
-    api.workOrders.availableNearby,
-    order.status === "open" ? { workOrderId: order._id } : "skip",
-  );
   return (
-    <FlightMap
-      chrome={false}
+    <JobViewer
       home={order.location}
-      selected={order.location}
       area={order.area}
-      route={order.area ? order.destinations : undefined}
-      fleet={spreadFleet(nearby ?? [])}
+      destinations={jobPreviewPath(order)}
     />
   );
 }
@@ -760,8 +881,11 @@ function WaitingPanel({
         {order.description || "No additional instructions."}
       </p>
       <p className="selection-summary">
-        {order.altitudeM} m altitude · {order.hoverSec} s hover ·{" "}
-        {order.environment === "simulated" ? "Simulation" : "Aircraft"}
+        {order.kind === "flight_check"
+          ? `${order.altitudeM} m altitude · ${order.hoverSec} s hover · ${order.environment === "simulated" ? "Simulation" : "Aircraft"}`
+          : order.environment === "simulated"
+            ? "Simulation"
+            : "Aircraft"}
       </p>
       {order.status === "open" && (
         <p className="muted">
@@ -783,6 +907,7 @@ function OperatorWorkspace({ account }: { account: Account }) {
     vehicles = useQuery(api.fleet.mine);
   const { point: here } = useBrowserLocation();
   const accept = useMutation(api.workOrders.accept);
+  const remove = useMutation(api.workOrders.remove);
   const [operationId, selectOperation] = useOperationSelection();
   const [boardTab, setBoardTab] = useState<"available" | "active">("available");
   const [selectedOrder, setSelectedOrder] = useState<Id<"workOrders"> | null>(
@@ -810,6 +935,23 @@ function OperatorWorkspace({ account }: { account: Account }) {
     order && vehicle
       ? quoteWorkOrder(order, vehicle.home, order.market)
       : order?.quote;
+  const { preview: acceptPreview, planning: planningRoute, error: routeError } =
+    useRegionalAcceptPreview(
+      order && vehicle
+        ? {
+            kind: order.kind,
+            location: order.location,
+            destinations: order.destinations,
+            area: order.area,
+            home: vehicle.home,
+            altitudeM: order.altitudeM,
+            hoverSec: order.hoverSec,
+          }
+        : null,
+    );
+  const acceptPosition = vehicle
+    ? (vehicle.telemetry?.sample?.position ?? vehicle.home)
+    : undefined;
   const lifetimeCents = account.operator?.lifetimeEarningsCents ?? 0;
   const manualControl = vehicle?.capabilities.includes("manual_computer")
     ? ("computer" as const)
@@ -826,6 +968,17 @@ function OperatorWorkspace({ account }: { account: Account }) {
     setError("");
     if (overlayingFlight) selectOperation(null);
     else setSelectedOrder(null);
+  }
+  async function deleteJob(workOrderId: Id<"workOrders">) {
+    setError("");
+    try {
+      await remove({ workOrderId });
+      if (selectedOrder === workOrderId) setSelectedOrder(null);
+      const flight = operations?.find((item) => item.workOrderId === workOrderId);
+      if (flight && operationId === flight._id) selectOperation(null);
+    } catch (caught) {
+      setError(messageOf(caught));
+    }
   }
   useEffect(() => {
     if (!overlay) return;
@@ -896,35 +1049,45 @@ function OperatorWorkspace({ account }: { account: Account }) {
                     job.eligibleVehicleIds.includes(item._id),
                   ) ?? vehicles?.[0];
                 const type = droneTypeByModel(match?.model);
-                const eta = Math.ceil(
-                  (job.quote.deadheadM + job.quote.taskM) / 2 +
-                    job.altitudeM * 2 +
-                    job.hoverSec +
-                    60,
-                );
+                const eta = previewAcceptedFlight({
+                  kind: job.kind,
+                  location: job.location,
+                  destinations: job.destinations,
+                  home: match?.home ?? job.location,
+                  altitudeM: job.altitudeM,
+                  hoverSec: job.hoverSec,
+                }).durationSec;
                 return (
-                  <button
-                    className="job-row"
-                    key={job._id}
-                    onClick={() => {
-                      setSelectedOrder(job._id);
-                      setError("");
-                    }}
-                  >
-                    <JobArt src={type.src} silhouette />
-                    <span className="mission-copy">
-                      <span className="job-person">
-                        {job.title}
-                        <span className="job-pay">
-                          {formatUsd(job.quote.cents)}
+                  <div className="job-item" key={job._id}>
+                    <button
+                      className="job-row"
+                      onClick={() => {
+                        setSelectedOrder(job._id);
+                        setError("");
+                      }}
+                    >
+                      <JobArt src={type.src} silhouette />
+                      <span className="mission-copy">
+                        <span className="job-person">
+                          {job.title}
+                          <span className="job-pay">
+                            {formatUsd(job.quote.cents)}
+                          </span>
+                        </span>
+                        <span className="job-description">
+                          {JOB_LABELS[job.kind]} · ~{formatDurationSec(eta)}
                         </span>
                       </span>
-                      <span className="job-description">
-                        {JOB_LABELS[job.kind]} · ~{formatDurationSec(eta)}
-                      </span>
-                    </span>
-                    <span className="status available">Available</span>
-                  </button>
+                      <span className="status available">Available</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="text-button delete-job"
+                      onClick={() => void deleteJob(job._id)}
+                    >
+                      Delete
+                    </button>
+                  </div>
                 );
               })}
             </div>
@@ -949,7 +1112,9 @@ function OperatorWorkspace({ account }: { account: Account }) {
           ) : (
             <div className="job-list">
               {operations.map((operation) => {
-                const type = droneTypeByModel(operation.vehicleModel ?? undefined);
+                const type = droneTypeByModel(
+                  operation.vehicleModel ?? undefined,
+                );
                 const left = remainingFlightSec({
                   state: operation.state,
                   maxDurationSec: operation.plan.maxDurationSec,
@@ -966,39 +1131,47 @@ function OperatorWorkspace({ account }: { account: Account }) {
                         ? `${formatDurationSec(left)} left`
                         : `~${formatDurationSec(left)}`;
                 return (
-                  <button
-                    className="job-row"
-                    key={operation._id}
-                    onClick={() => {
-                      selectOperation(operation._id);
-                      setSelectedOrder(null);
-                    }}
-                  >
-                    <JobArt src={type.src} />
-                    <span className="mission-copy">
-                      <span className="job-person">
-                        {operation.title}
-                        {(operation.earnedCents ??
-                          operation.quotedEarnings?.cents) != null && (
-                          <span className="job-pay">
-                            {formatUsd(
-                              operation.earnedCents ??
-                                operation.quotedEarnings?.cents ??
-                                0,
-                            )}
-                          </span>
-                        )}
-                      </span>
-                      <span className="job-description">
-                        {JOB_LABELS[operation.kind]} · {eta}
-                      </span>
-                    </span>
-                    <span
-                      className={`status ${operation.state}${pending ? " pending" : ""}`}
+                  <div className="job-item" key={operation._id}>
+                    <button
+                      className="job-row"
+                      onClick={() => {
+                        selectOperation(operation._id);
+                        setSelectedOrder(null);
+                      }}
                     >
-                      {OPERATION_LABELS[operation.state]}
-                    </span>
-                  </button>
+                      <JobArt src={type.src} />
+                      <span className="mission-copy">
+                        <span className="job-person">
+                          {operation.title}
+                          {(operation.earnedCents ??
+                            operation.quotedEarnings?.cents) != null && (
+                            <span className="job-pay">
+                              {formatUsd(
+                                operation.earnedCents ??
+                                  operation.quotedEarnings?.cents ??
+                                  0,
+                              )}
+                            </span>
+                          )}
+                        </span>
+                        <span className="job-description">
+                          {JOB_LABELS[operation.kind]} · {eta}
+                        </span>
+                      </span>
+                      <span
+                        className={`status ${operation.state}${pending ? " pending" : ""}`}
+                      >
+                        {OPERATION_LABELS[operation.state]}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="text-button delete-job"
+                      onClick={() => void deleteJob(operation.workOrderId)}
+                    >
+                      Delete
+                    </button>
+                  </div>
                 );
               })}
             </div>
@@ -1013,6 +1186,9 @@ function OperatorWorkspace({ account }: { account: Account }) {
     </>
   );
   const overlayFlight = operations?.find((item) => item._id === operationId);
+  const overlayWorkOrderId = overlayingJob
+    ? order?._id
+    : overlayFlight?.workOrderId;
   const overlayBoard = (
     <div className="job-float">
       <RequestHeading
@@ -1024,6 +1200,21 @@ function OperatorWorkspace({ account }: { account: Account }) {
         onBack={closeOverlay}
         backLabel="Back to jobs"
       />
+      {overlayingJob && order && vehicle && (
+        <div className="job-overlay-meta">
+          <JobArt src={droneTypeByModel(vehicle.model).src} />
+          <div>
+            <p>{vehicle.name}</p>
+            <p className="muted" data-testid="accept-duration">
+              {planningRoute
+                ? "Planning terrain route…"
+                : acceptPreview
+                  ? `~${formatDurationSec(acceptPreview.durationSec)} flight`
+                  : routeError || "Route unavailable"}
+            </p>
+          </div>
+        </div>
+      )}
       {overlayingFlight && overlayFlight && (
         <div className="job-overlay-meta">
           <JobArt
@@ -1054,7 +1245,14 @@ function OperatorWorkspace({ account }: { account: Account }) {
             {order.description || "No additional instructions."}
           </p>
           <p className="selection-summary">
-            {order.altitudeM} m altitude · {order.hoverSec} s hover
+            {order.kind === "flight_check"
+              ? `${order.altitudeM} m altitude · ${order.hoverSec} s hover`
+              : JOB_LABELS[order.kind]}
+            {planningRoute
+              ? " · planning route"
+              : acceptPreview
+                ? ` · ~${formatDurationSec(acceptPreview.durationSec)}`
+                : ""}
           </p>
           <form
             onSubmit={async (event) => {
@@ -1084,11 +1282,21 @@ function OperatorWorkspace({ account }: { account: Account }) {
                 value={vehicleId ?? ""}
                 onChange={(e) => setSelectedVehicle(e.target.value)}
               >
-                {availableVehicles.map((vehicle) => (
-                  <option key={vehicle._id} value={vehicle._id}>
-                    {vehicle.name}
-                  </option>
-                ))}
+                {availableVehicles.map((item) => {
+                  const eta = previewAcceptedFlight({
+                    kind: order.kind,
+                    location: order.location,
+                    destinations: order.destinations,
+                    home: item.home,
+                    altitudeM: order.altitudeM,
+                    hoverSec: order.hoverSec,
+                  }).durationSec;
+                  return (
+                    <option key={item._id} value={item._id}>
+                      {item.name} · ~{formatDurationSec(eta)}
+                    </option>
+                  );
+                })}
               </select>
             </label>
             <fieldset className="flight-control">
@@ -1137,9 +1345,18 @@ function OperatorWorkspace({ account }: { account: Account }) {
       {overlayingFlight && operationId && (
         <OperationPanel operationId={operationId} operator map={false} />
       )}
-      {error && (
+      {overlayWorkOrderId && (
+        <button
+          type="button"
+          className="text-button delete-job"
+          onClick={() => void deleteJob(overlayWorkOrderId)}
+        >
+          Delete
+        </button>
+      )}
+      {(error || (overlayingJob && routeError)) && (
         <p className="error" role="alert">
-          {error}
+          {error || routeError}
         </p>
       )}
     </div>
@@ -1158,10 +1375,22 @@ function OperatorWorkspace({ account }: { account: Account }) {
             operationId={showActive ? operationId : null}
             highlightIds={
               order
-                ? order.eligibleVehicleIds
+                ? vehicleId
+                  ? [vehicleId]
+                  : order.eligibleVehicleIds
                 : overlayFlight
                   ? [overlayFlight.vehicleId]
                   : []
+            }
+            preview={
+              overlayingJob && vehicle && acceptPosition
+                ? {
+                    home: vehicle.home,
+                    position: acceptPosition,
+                    path: acceptPreview?.path ?? [],
+                    spriteSrc: droneTypeByModel(vehicle.model).src,
+                  }
+                : undefined
             }
           />
         }
@@ -1176,26 +1405,25 @@ function LiveFlightMap({
   home,
   route,
   area,
-  stale,
-  chrome = true,
+  vehicleModel,
 }: {
   sample?: AircraftSample;
   sessionId?: string;
   home: GeoPoint;
   route: GeoPoint[];
   area?: SurveyArea;
-  stale: boolean;
+  vehicleModel?: string | null;
+  stale?: boolean;
   chrome?: boolean;
 }) {
-  const display = useTelemetryPlayback(sample, sessionId);
   return (
-    <FlightMap
-      chrome={chrome}
+    <JobViewer
       home={home}
-      route={route}
       area={area}
-      position={display?.position}
-      stale={stale}
+      sample={sample}
+      sessionId={sessionId}
+      destinations={sample?.mission?.path ?? route}
+      spriteSrc={droneTypeByModel(vehicleModel ?? undefined).src}
     />
   );
 }
@@ -1220,15 +1448,18 @@ function OperatorLiveMap({ operationId }: { operationId: Id<"operations"> }) {
     !session.retired &&
     session.leaseUntil > now;
   return (
-    <LiveFlightMap
-      chrome={false}
-      area={details.order?.area}
-      home={operation.plan.home}
-      route={operation.plan.steps.map((step) => step.position)}
-      sample={sample}
-      sessionId={telemetry?.sessionId}
-      stale={!fresh}
-    />
+    <div className="live-map-stack">
+      <LiveFlightMap
+        chrome={false}
+        area={details.order?.area}
+        home={operation.plan.home}
+        route={operation.plan.steps.map((step) => step.position)}
+        sample={sample}
+        sessionId={telemetry?.sessionId}
+        vehicleModel={vehicle?.model}
+        stale={!fresh}
+      />
+    </div>
   );
 }
 function OperationPanel({
@@ -1300,17 +1531,13 @@ function OperationPanel({
           route={operation.plan.steps.map((step) => step.position)}
           sample={sample}
           sessionId={telemetry?.sessionId}
+          vehicleModel={vehicle?.model}
           stale={!fresh}
         />
       )}
       <section className="panel mission-panel">
         <div className="mission-heading">
           <div>
-            <p className="eyebrow">
-              {vehicle?.environment === "simulated"
-                ? "SIMULATED AIRCRAFT"
-                : "PHYSICAL AIRCRAFT"}
-            </p>
             <h2>{OPERATION_LABELS[operation.state]}</h2>
           </div>
           <span
@@ -1329,40 +1556,91 @@ function OperationPanel({
         <p className="muted">
           {details.order?.title} · {vehicle?.name}
         </p>
-        <div className="telemetry">
-          <div>
-            <span>Altitude above launch</span>
-            <strong data-testid="altitude">
-              {number(sample?.altitudeM, 1)}
-              <small>m</small>
-            </strong>
-          </div>
-          <div>
-            <span>Battery</span>
-            <strong>
-              {number(sample?.batteryPct)}
-              <small>%</small>
-            </strong>
-          </div>
-          <div>
-            <span>Ground speed</span>
-            <strong>
-              {number(sample?.speedMps, 1)}
-              <small>m/s</small>
-            </strong>
-          </div>
-          <div>
-            <span>Control owner</span>
-            <strong className="step-value" data-testid="control-owner">
-              {operation.controlOwner === "none"
-                ? "No flight control"
-                : operation.controlOwner === "autonomy"
-                  ? "Flight agent"
-                  : operation.controlOwner === "remote"
-                    ? "Physical remote"
-                    : "Operator computer"}
-            </strong>
-          </div>
+        <div className={sample?.mission ? "telemetry" : "telemetry telemetry-stats"}>
+          {sample?.mission ? (
+            <>
+              <div>
+                <span>Phase</span>
+                <strong className="step-value">
+                  {DEMO_PHASE_LABELS[sample.mission.phase] ??
+                    sample.mission.phase}
+                </strong>
+              </div>
+              <div>
+                <span>Mission clock</span>
+                <strong>{clock(sample.mission.elapsed)}</strong>
+              </div>
+              <div>
+                <span>Playback</span>
+                <strong>
+                  {number(sample.mission.multiplier, 0)}
+                  <small>×</small>
+                </strong>
+              </div>
+              <div>
+                <span>Battery</span>
+                <strong>
+                  {number(sample.mission.battery)}
+                  <small>%</small>
+                </strong>
+              </div>
+              <div>
+                <span>Predicted at A</span>
+                <strong>
+                  {number(sample.mission.predictedArrivalBattery)}
+                  <small>%</small>
+                </strong>
+              </div>
+              <div>
+                <span>Distance</span>
+                <strong>
+                  {number(sample.mission.distance / 1000, 2)}
+                  <small>km</small>
+                </strong>
+              </div>
+              <div>
+                <span>Photos</span>
+                <strong>
+                  {sample.mission.photos}
+                  <small>/{sample.mission.totalPhotos}</small>
+                </strong>
+              </div>
+              {sample.mission.result && (
+                <div>
+                  <span>Search</span>
+                  <strong className="step-value">
+                    {sample.mission.result.type === "found"
+                      ? "Target found"
+                      : sample.mission.result.type}
+                  </strong>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div>
+                <span>Altitude above launch</span>
+                <strong data-testid="altitude">
+                  {number(sample?.altitudeM, 1)}
+                  <small>m</small>
+                </strong>
+              </div>
+              <div>
+                <span>Battery</span>
+                <strong>
+                  {number(sample?.batteryPct)}
+                  <small>%</small>
+                </strong>
+              </div>
+              <div>
+                <span>Ground speed</span>
+                <strong>
+                  {number(sample?.speedMps, 1)}
+                  <small>m/s</small>
+                </strong>
+              </div>
+            </>
+          )}
         </div>
         <div className="telemetry-caption">
           <span>
@@ -1381,34 +1659,6 @@ function OperationPanel({
             · {sample?.flightMode ?? "Flight mode unknown"}
           </span>
         </div>
-        <ol className="steps production-steps">
-          {operation.plan.steps.map((step, index) => (
-            <li
-              className={
-                operation.verifiedSteps.includes(index)
-                  ? "completed"
-                  : operation.currentStep === index && !closed
-                    ? "active"
-                    : ""
-              }
-              key={index}
-            >
-              <span>
-                {operation.verifiedSteps.includes(index) ? "✓" : index + 1}
-              </span>
-              <div>
-                {step.label}
-                <small>
-                  {step.kind === "hover"
-                    ? `${step.durationSec} s measured hold`
-                    : step.kind === "land"
-                      ? "Grounded & disarmed"
-                      : `${step.altitudeM} m above launch`}
-                </small>
-              </div>
-            </li>
-          ))}
-        </ol>
         {operation.attention && (
           <p role="alert" className="error">
             {operation.attention}
@@ -1422,91 +1672,83 @@ function OperationPanel({
         )}
         {operator && !closed && (
           <div className="control-panel">
-            <div className="flight-action">
-              <div>
-                <strong>
-                  {operation.plan.mode === "autonomous"
-                    ? "Autonomous flight"
-                    : "Manual flight"}
-                </strong>
-                <p>
-                  {operation.state === "ready"
-                    ? problems.length
-                      ? problems.join(". ")
-                      : "Preflight checks passed. Ready for operator start."
-                    : operation.state === "manual"
-                      ? `Control transferred to ${operation.manualControl === "remote" ? "your physical remote" : "your computer"}. Flight steps follow measured aircraft state.`
-                      : "Commands require acknowledgment from the aircraft."}
-                </p>
-              </div>
-              <button
-                className="primary start"
-                disabled={
-                  busy ||
-                  operation.state !== "ready" ||
-                  !fresh ||
-                  problems.length > 0
-                }
-                onClick={() => void send("start")}
-              >
-                {operation.state === "starting"
-                  ? "Awaiting aircraft…"
-                  : "Start flight"}
-                <span>↗</span>
-              </button>
-            </div>
-            <div className="interventions">
-              {underAutonomy && (
-                <button
-                  className="primary takeover"
-                  disabled={busy || !canTakeControl}
-                  onClick={() => {
-                    setError("");
-                    setConfirmTakeover(true);
-                  }}
-                >
-                  {operation.state === "taking_over"
-                    ? "Transferring control…"
-                    : "Take Control"}
-                </button>
-              )}
-              <button
-                disabled={
-                  busy ||
-                  !fresh ||
-                  !["active", "manual", "returning"].includes(operation.state)
-                }
-                onClick={() => void send("hold")}
-              >
-                Hold
-              </button>
-              <button
-                disabled={
-                  busy ||
-                  !fresh ||
-                  !["active", "manual", "returning"].includes(operation.state)
-                }
-                onClick={() => void send("return")}
-              >
-                Return home
-              </button>
-              <button
-                className="land-button"
-                disabled={
-                  busy ||
-                  !session ||
-                  session.retired ||
-                  session.leaseUntil <= now ||
-                  ["assigned", "ready"].includes(operation.state)
-                }
-                onClick={() => void send("land")}
-              >
-                Land
-              </button>
-            </div>
-            {["attention", "assigned", "ready", "landing", "manual"].includes(
+            {["assigned", "ready", "starting", "attention"].includes(
               operation.state,
-            ) &&
+            ) && (
+              <>
+                {problems.length > 0 && (
+                  <p className="error" role="status">
+                    {problems.join(". ")}
+                  </p>
+                )}
+                <button
+                  className="primary start"
+                  disabled={
+                    busy ||
+                    operation.state !== "ready" ||
+                    !fresh ||
+                    problems.length > 0
+                  }
+                  onClick={() => void send("start")}
+                >
+                  {operation.state === "starting"
+                    ? "Awaiting aircraft…"
+                    : operation.plan.mode === "autonomous"
+                      ? "Start autonomous flight"
+                      : "Start flight"}
+                  <span>↗</span>
+                </button>
+              </>
+            )}
+            {["active", "taking_over", "manual", "returning", "landing"].includes(
+              operation.state,
+            ) && (
+              <div className="interventions">
+                {underAutonomy && (
+                  <button
+                    className="primary takeover"
+                    disabled={busy || !canTakeControl}
+                    onClick={() => {
+                      setError("");
+                      setConfirmTakeover(true);
+                    }}
+                  >
+                    {operation.state === "taking_over"
+                      ? "Transferring control…"
+                      : "Take Control"}
+                  </button>
+                )}
+                {["active", "manual", "returning"].includes(operation.state) && (
+                  <>
+                    <button
+                      disabled={busy || !fresh}
+                      onClick={() => void send("hold")}
+                    >
+                      Hold
+                    </button>
+                    <button
+                      disabled={busy || !fresh}
+                      onClick={() => void send("return")}
+                    >
+                      Return home
+                    </button>
+                  </>
+                )}
+                <button
+                  className="land-button"
+                  disabled={
+                    busy ||
+                    !session ||
+                    session.retired ||
+                    session.leaseUntil <= now
+                  }
+                  onClick={() => void send("land")}
+                >
+                  Land
+                </button>
+              </div>
+            )}
+            {["attention", "landing", "manual"].includes(operation.state) &&
               sample?.armed === false &&
               sample?.airborne === false &&
               fresh && (
@@ -1590,10 +1832,7 @@ function OperationPanel({
             }}
           />
         )}
-        <CameraPanel
-          operationId={operation._id}
-          supported={vehicle?.capabilities.includes("camera") ?? false}
-        />
+        <CameraPanel operationId={operation._id} supported inspecting={details.order?.kind === "inspection" || sample?.mission?.mode === "inspection"} />
         <details className="events">
           <summary>
             Flight activity <span>{details.events.length} events</span>

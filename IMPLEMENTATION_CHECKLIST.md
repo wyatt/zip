@@ -33,6 +33,7 @@ Status: Phase 1 complete. No blocker. Verified locally on 2026-09-05: TypeScript
 User-authorized expansion beyond the generic v1 job; physical flight remains out of scope.
 
 - [x] Delivery pickup/drop-off pins and additional instructions.
+- [x] Customer delivery is A → B; regional planner routes A → B, delivers at B, and returns to A.
 - [x] Search and inspection rectangular region selection.
 - [x] Real street map, zoom/pan, attribution, selection editing and previews.
 - [x] Convex persists task geometry; local agent flies task-specific routes and steps.
@@ -57,6 +58,12 @@ Status: iteration 2 complete. TypeScript, production build, seven focused tests,
 - [x] Search/inspection two-corner editing, shaded area, dimensions and sweep preview.
 - [x] Persist area and generate sweep waypoints server-side; display in customer/operator/operation maps.
 - [x] TypeScript passes. Additional test runs omitted at user request.
+
+## Regional demo simulator (`npm run agent:demo`)
+
+- [x] `--demo` is default: every fleet aircraft, including physical records, is a local demo drone with streamed simulated telemetry.
+- [x] Agent publishes continuous synthetic position and pass-by-pass inspection frames; Convex restamps sample time so prepare/start are not blocked by clock skew.
+- [ ] Operator/requester browser verification of FAA overlay, follow view, and live video (run locally with `agent:demo`).
 
 ## Operator earnings
 

@@ -1,4 +1,4 @@
-import type { AircraftSample, ControlOwner, GeoPoint } from "../../lib/operations";
+import type { AircraftSample, ControlOwner, FlightPlan, GeoPoint, PlanStep } from "../../lib/operations";
 import { metersBetween } from "../../lib/operations";
 import { assertCommandContext, type AdapterIdentity, type CommandAcknowledgment, type CommandContext, type DroneAdapter } from "../drone-adapter";
 
@@ -12,7 +12,9 @@ export class SimulatedDrone implements DroneAdapter {
   private velocity: { north: number; east: number; up: number; yaw: number; expiresAt: number } | null = null;
   private lastTick = 0;
   private landing = false;
+  private regional = false;
   private acknowledgments = new Map<string, CommandAcknowledgment>();
+  private external = false;
 
   constructor(private readonly hardwareId: string, private readonly home: GeoPoint) {
     this.target = { position: { ...home }, altitudeM: 0 };
@@ -74,6 +76,15 @@ export class SimulatedDrone implements DroneAdapter {
   async stop(context: CommandContext) {
     return this.acknowledge(context, () => this.hold());
   }
+  async beginRegionalTask(step: PlanStep, _plan: FlightPlan, context: CommandContext) {
+    return this.acknowledge(context, () => {
+      this.regional = true;
+      this.landing = false;
+      this.velocity = null;
+      this.target = { position: { ...step.position }, altitudeM: Math.min(30, Math.max(2, step.altitudeM)) };
+      this.sample.flightMode = "navigation";
+    });
+  }
   async goTo(position: GeoPoint, altitudeM: number, context: CommandContext) {
     return this.acknowledge(context, () => {
       if (!this.sample.airborne || !Number.isFinite(altitudeM) || altitudeM < 2 || altitudeM > 30 || metersBetween(this.home, position) > 3000) throw new Error("Navigation target is not valid.");
@@ -96,6 +107,17 @@ export class SimulatedDrone implements DroneAdapter {
     });
   }
   async getTelemetry() { return structuredClone(this.sample); }
+  /** Demo regional sim writes measured samples through the same listener bus. */
+  applyExternalSample(sample: AircraftSample) {
+    this.external = true;
+    this.regional = false;
+    const capturedAt = sample.capturedAt > this.sample.capturedAt ? sample.capturedAt : this.sample.capturedAt + 1;
+    const sequence = Math.max(sample.sequence, this.sample.sequence + 1);
+    this.sample = { ...sample, connected: true, capturedAt, sequence };
+    for (const listener of this.listeners) listener(structuredClone(this.sample));
+  }
+  lockExternal() { this.external = true; }
+  releaseExternal() { this.external = false; this.regional = false; }
   onTelemetry(listener: (sample: AircraftSample) => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   async handleLinkLoss(reason: string) {
     this.velocity = null;
@@ -114,6 +136,13 @@ export class SimulatedDrone implements DroneAdapter {
     this.sample.flightMode = this.sample.airborne ? "hold" : "grounded";
   }
   private tick() {
+    if (this.external) {
+      const now = Date.now();
+      this.sample.capturedAt = now > this.sample.capturedAt ? now : this.sample.capturedAt + 1;
+      this.sample.sequence++;
+      for (const listener of this.listeners) listener(structuredClone(this.sample));
+      return;
+    }
     const now = Date.now(), dt = Math.min(.1, Math.max(0, (now - this.lastTick) / 1000));
     this.lastTick = now;
     const old = this.sample.position!, oldAltitude = this.sample.altitudeM!;
@@ -134,11 +163,16 @@ export class SimulatedDrone implements DroneAdapter {
     if (this.sample.altitudeM! > .1) this.sample.airborne = true;
     if (this.landing && this.sample.altitudeM! <= .01) {
       this.sample.altitudeM = 0; this.sample.armed = false; this.sample.airborne = false;
-      this.sample.flightMode = "grounded"; this.landing = false;
+      this.sample.flightMode = "grounded"; this.landing = false; this.regional = false;
+    }
+    if (this.regional && this.sample.position && this.sample.altitudeM !== null && metersBetween(this.sample.position, this.target.position) < 2 && Math.abs(this.sample.altitudeM - this.target.altitudeM) < 0.5) {
+      this.regional = false;
+      this.sample.flightMode = "mission_complete";
+      this.sample.mission = { mode: "inspection", phase: "complete", elapsed: 0, battery: this.sample.batteryPct ?? 0, predictedArrivalBattery: this.sample.batteryPct ?? 0, photos: 0, totalPhotos: 0, sorties: 1, returns: 0, multiplier: 1, distance: 0, reason: "", terrainKey: "" };
     }
     this.sample.speedMps = dt ? metersBetween(old, this.sample.position!) / dt : 0;
     if (this.sample.armed) this.sample.batteryPct = Math.max(0, this.sample.batteryPct! - dt * .05);
-    this.sample.capturedAt = now;
+    this.sample.capturedAt = now > this.sample.capturedAt ? now : this.sample.capturedAt + 1;
     this.sample.sequence++;
     for (const listener of this.listeners) listener(structuredClone(this.sample));
   }

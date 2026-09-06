@@ -1,9 +1,12 @@
 import { ConvexClient } from "convex/browser";
 import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { api } from "../convex/_generated/api";
 import type { FunctionReturnType } from "convex/server";
 import type { Id } from "../convex/_generated/dataModel";
-import { SimulatedDrone } from "./adapters/simulated-drone";
+import { DemoDrone } from "./adapters/demo-drone";
+import { startDemoHttp } from "./demo-http";
 import type { CommandContext, DroneAdapter } from "./drone-adapter";
 import { MissionExecutor } from "./mission-executor";
 import { executeAdapterCommand } from "./adapter-command";
@@ -21,9 +24,13 @@ type VehicleHandle = {
   shutdown: () => Promise<boolean>;
 };
 
-async function connectVehicle(client: ConvexClient, token: string, instanceId: string, config: FleetVehicle, isShuttingDown: () => boolean): Promise<VehicleHandle> {
-  if (config.environment !== "simulated") throw new Error("Physical adapters are not installed.");
-  const adapter: DroneAdapter = new SimulatedDrone(config.hardwareId, config.home);
+async function connectVehicle(client: ConvexClient, token: string, instanceId: string, config: FleetVehicle, isShuttingDown: () => boolean, demo: { port: number; register: (adapter: DemoDrone) => void }): Promise<VehicleHandle> {
+  const adapter = new DemoDrone(config.hardwareId, config.home, `http://127.0.0.1:${demo.port}/terrain/`, {
+    environment: config.environment,
+    capabilities: config.capabilities,
+    model: config.name,
+  });
+  demo.register(adapter);
   const identity = await adapter.connect();
   const openArgs = () => ({ token, vehicleId: config.vehicleId, instanceId, hardwareId: identity.hardwareId, environment: identity.environment, capabilities: identity.capabilities });
   let sessionId = await client.mutation(api.agentLink.open, openArgs());
@@ -32,15 +39,40 @@ async function connectVehicle(client: ConvexClient, token: string, instanceId: s
   let latestWork: Work | null = null;
   let activeExecution: AbortController | null = null;
   let activeGeneration = -1;
-  let publishing = false, renewing = false, processing = false, reconnecting = false, shuttingDown = false;
+  let renewing = false, processing = false, reconnecting = false, shuttingDown = false;
   let lastBackendContact = Date.now();
   let linkLost = false;
   let observedSequence = -1;
   let cameraPublishedFor = "", cameraExpiresAt = 0, cameraPublishing = false;
+  let preparedRetryAt = 0;
+  let lastPreparedError = "";
+  let clockOffset = 0;
   const receivedCommands = new Set<string>();
   const sampleSubscription = adapter.onTelemetry(sample => { latestSample = sample; });
+  latestSample = await adapter.getTelemetry();
   const sessionArgs = () => ({ token, sessionId });
   const contact = () => { lastBackendContact = Date.now(); };
+  let publishChain = Promise.resolve();
+  let publishQueued = false;
+  function enqueuePublish(sample?: AircraftSample) {
+    if (sample && sample.sequence > (latestSample?.sequence ?? -1)) latestSample = sample;
+    if (publishQueued || shuttingDown || isShuttingDown()) return publishChain;
+    publishQueued = true;
+    publishChain = publishChain.then(async () => {
+      publishQueued = false;
+      const current = latestSample;
+      if (!current || current.sequence <= observedSequence || shuttingDown || isShuttingDown()) return;
+      try {
+        await client.mutation(api.agentLink.publish, { ...sessionArgs(), sample: { ...current, capturedAt: current.capturedAt + clockOffset } });
+        observedSequence = current.sequence;
+        contact();
+      } catch (error) {
+        console.error(`${identity.hardwareId} publish:`, error instanceof Error ? error.message : "publish failed");
+      }
+    });
+    return publishChain;
+  }
+  await enqueuePublish(latestSample);
   async function failLocally(reason: string) {
     activeExecution?.abort(); activeExecution = null;
     await adapter.handleLinkLoss(reason);
@@ -63,6 +95,8 @@ async function connectVehicle(client: ConvexClient, token: string, instanceId: s
       sessionId = await client.mutation(api.agentLink.open, openArgs());
       observedSequence = -1;
       latestWork = null;
+      latestSample = await adapter.getTelemetry();
+      await enqueuePublish(latestSample);
       unsubscribe = subscribe();
       contact();
     } catch (error) { console.error(`${identity.hardwareId} reconnect pending:`, error instanceof Error ? error.message : "connection error"); }
@@ -73,6 +107,7 @@ async function connectVehicle(client: ConvexClient, token: string, instanceId: s
     processing = true;
     try {
       const work = latestWork;
+      adapter.setJob?.(work.job ?? null);
       if (activeExecution && work.operation?.controlGeneration !== activeGeneration) {
         activeExecution.abort(); activeExecution = null;
         const controller = new AbortController();
@@ -89,8 +124,23 @@ async function connectVehicle(client: ConvexClient, token: string, instanceId: s
             return;
           }
         }
-        await client.mutation(api.agentLink.prepared, { ...sessionArgs(), operationId: work.operation._id, planHash: work.operation.planHash });
-        contact();
+        if (Date.now() < preparedRetryAt) return;
+        if (observedSequence < 0 || !latestSample || Date.now() - latestSample.capturedAt > 1500) {
+          await enqueuePublish(latestSample ?? await adapter.getTelemetry());
+          return;
+        }
+        try {
+          await client.mutation(api.agentLink.prepared, { ...sessionArgs(), operationId: work.operation._id, planHash: work.operation.planHash });
+          lastPreparedError = "";
+          contact();
+        } catch (error) {
+          preparedRetryAt = Date.now() + 750;
+          const message = error instanceof Error ? error.message : "prepare failed";
+          if (message !== lastPreparedError) {
+            lastPreparedError = message;
+            console.error(`${identity.hardwareId} prepare:`, message);
+          }
+        }
         return;
       }
       for (const command of work.commands) {
@@ -110,7 +160,7 @@ async function connectVehicle(client: ConvexClient, token: string, instanceId: s
             if (Date.now() >= context.expiresAt || controller.signal.aborted) throw new Error("Aircraft did not confirm control ownership before the deadline.");
             await delay(50, undefined, { signal: controller.signal });
           }
-          await client.mutation(api.agentLink.publish, { ...sessionArgs(), sample: latestSample });
+          await enqueuePublish(latestSample);
           if (claimed.kind === "land") await executeAdapterCommand(context, command => adapter.land(command));
           else if (claimed.kind === "hold") await executeAdapterCommand(context, command => adapter.stop(command));
           else if (claimed.kind === "return") {
@@ -138,15 +188,16 @@ async function connectVehicle(client: ConvexClient, token: string, instanceId: s
     } finally { processing = false; }
   }
   const publishTimer = setInterval(() => {
-    if (publishing || !latestSample || latestSample.sequence === observedSequence || shuttingDown || isShuttingDown()) return;
-    publishing = true;
-    const sample = latestSample;
-    void client.mutation(api.agentLink.publish, { ...sessionArgs(), sample }).then(() => { observedSequence = sample.sequence; contact(); }).catch(() => undefined).finally(() => { publishing = false; });
+    if (!latestSample || latestSample.sequence <= observedSequence || shuttingDown || isShuttingDown()) return;
+    void enqueuePublish(latestSample);
   }, 100);
   const heartbeatTimer = setInterval(() => {
     if (renewing || shuttingDown || isShuttingDown()) return;
     renewing = true;
-    void client.mutation(api.agentLink.renew, sessionArgs()).then(contact).catch(() => reconnect()).finally(() => { renewing = false; });
+    void client.mutation(api.agentLink.renew, sessionArgs()).then(result => {
+      clockOffset = result.serverTime - Date.now();
+      contact();
+    }).catch(() => reconnect()).finally(() => { renewing = false; });
   }, 2000);
   const workTimer = setInterval(() => { void processWork(); }, 250);
   const cameraTimer = setInterval(() => {
@@ -185,27 +236,57 @@ async function connectVehicle(client: ConvexClient, token: string, instanceId: s
   };
 }
 
+function persistentInstanceId() {
+  const path = join(process.cwd(), "data", ".iris-agent-instance");
+  try {
+    const existing = readFileSync(path, "utf8").trim();
+    if (/^[a-zA-Z0-9_-]{10,100}$/.test(existing)) return existing;
+  } catch { /* first run */ }
+  const id = randomUUID();
+  mkdirSync(join(process.cwd(), "data"), { recursive: true });
+  writeFileSync(path, id);
+  return id;
+}
+
+function isAddrInUse(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "EADDRINUSE";
+}
+
 export async function startFlightAgent(url: string, token: string) {
   const client = new ConvexClient(url);
-  const instanceId = randomUUID();
+  const instanceId = persistentInstanceId();
   const vehicles = new Map<string, VehicleHandle>();
   const skipped = new Set<string>();
+  const connecting = new Set<string>();
   let shuttingDown = false;
+  const demos: DemoDrone[] = [];
+  const demoHttp = await startDemoHttp(Number(process.env.IRIS_DEMO_HTTP_PORT ?? "8766"), hardwareId => {
+    if (hardwareId) return demos.find(drone => drone.hardwareId === hardwareId)?.latestJpeg() ?? null;
+    for (let i = demos.length - 1; i >= 0; i--) {
+      const jpeg = demos[i]?.latestJpeg();
+      if (jpeg) return jpeg;
+    }
+    return null;
+  }).catch(error => {
+    if (isAddrInUse(error)) throw new Error("Demo HTTP port 8766 is already in use. Stop the other flight agent first.");
+    throw error;
+  });
+  const demoOpts = { port: demoHttp.port, register: (adapter: DemoDrone) => { demos.push(adapter); } };
+  console.log(`Demo terrain and camera at http://127.0.0.1:${demoHttp.port}/`);
   async function pulse() {
     if (shuttingDown) return;
     await client.mutation(api.agentLink.pulse, { token });
   }
   async function connect(config: FleetVehicle) {
-    if (vehicles.has(config.vehicleId) || skipped.has(config.vehicleId)) return;
-    if (config.environment !== "simulated") {
-      skipped.add(config.vehicleId);
-      console.error(`${config.name} (${config.hardwareId}) skipped: physical adapters are not installed.`);
-      return;
-    }
+    if (vehicles.has(config.vehicleId) || skipped.has(config.vehicleId) || connecting.has(config.vehicleId)) return;
+    connecting.add(config.vehicleId);
     try {
-      vehicles.set(config.vehicleId, await connectVehicle(client, token, instanceId, config, () => shuttingDown));
+      vehicles.set(config.vehicleId, await connectVehicle(client, token, instanceId, config, () => shuttingDown, demoOpts));
     } catch (error) {
+      skipped.add(config.vehicleId);
       console.error(`${config.hardwareId}:`, error instanceof Error ? error.message : "failed to connect");
+    } finally {
+      connecting.delete(config.vehicleId);
     }
   }
   async function sync(list: FleetVehicle[]) {
@@ -217,14 +298,6 @@ export async function startFlightAgent(url: string, token: string) {
     for (const id of [...skipped]) if (!ids.has(id as Id<"vehicles">)) skipped.delete(id);
     for (const config of list) await connect(config);
   }
-  let unsubscribe = client.onUpdate(api.agentLink.fleet, { token }, list => { void sync(list); }, error => {
-    console.error("Fleet subscription requires reconciliation:", error instanceof Error ? error.message : "connection error");
-  });
-  await pulse();
-  const pulseTimer = setInterval(() => { void pulse().catch(error => {
-    console.error("Flight server heartbeat failed:", error instanceof Error ? error.message : "connection error");
-  }); }, 2000);
-  await sync(await client.query(api.agentLink.fleet, { token }));
   const gateway = await startControlGateway({
     port: Number(process.env.IRIS_CONTROL_PORT ?? process.env.PORT ?? "8765"),
     host: process.env.IRIS_CONTROL_BIND ?? (process.env.PORT ? "0.0.0.0" : "127.0.0.1"),
@@ -233,7 +306,18 @@ export async function startFlightAgent(url: string, token: string) {
     adapterFor: vehicleId => vehicles.get(vehicleId)?.adapter,
     owns: grant => vehicles.get(grant.vehicleId)?.owns(grant) ?? false,
     ...(process.env.IRIS_CONTROL_TLS_CERT && process.env.IRIS_CONTROL_TLS_KEY ? { tls: { certificatePath: process.env.IRIS_CONTROL_TLS_CERT, keyPath: process.env.IRIS_CONTROL_TLS_KEY } } : {}),
+  }).catch(error => {
+    if (isAddrInUse(error)) throw new Error("Control gateway port 8765 is already in use. Stop the other flight agent first.");
+    throw error;
   });
+  let unsubscribe = client.onUpdate(api.agentLink.fleet, { token }, list => { void sync(list); }, error => {
+    console.error("Fleet subscription requires reconciliation:", error instanceof Error ? error.message : "connection error");
+  });
+  await pulse();
+  const pulseTimer = setInterval(() => { void pulse().catch(error => {
+    console.error("Flight server heartbeat failed:", error instanceof Error ? error.message : "connection error");
+  }); }, 2000);
+  await sync(await client.query(api.agentLink.fleet, { token }));
   console.log(`Fleet agent online. Connected aircraft: ${vehicles.size}.`);
   return {
     async shutdown() {
@@ -251,6 +335,7 @@ export async function startFlightAgent(url: string, token: string) {
       }
       unsubscribe();
       clearInterval(pulseTimer);
+      await demoHttp.close();
       await gateway.close();
       await client.close();
     },

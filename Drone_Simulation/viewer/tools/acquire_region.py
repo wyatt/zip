@@ -52,21 +52,29 @@ def acquire_tile(rc):
     transform=Affine(1,0,ORIGIN[0]-SIZE/2+c*SOURCE_TILE,0,-1,ORIGIN[1]+SIZE/2-r*SOURCE_TILE)
     bounds=(transform.c,transform.f-SOURCE_TILE,transform.c+SOURCE_TILE,transform.f)
     b=transform_bounds(32618,3857,*bounds,densify_pts=21)
-    print(f'Acquiring source tile {r},{c}',flush=True)
-    pipeline=pdal.Pipeline(json.dumps([
-        {'type':'readers.ept','filename':sources.EPT,'bounds':f'([{b[0]-.01},{b[2]+.01}],[{b[1]-.01},{b[3]+.01}])','requests':2},
-        {'type':'filters.reprojection','in_srs':'EPSG:3857','out_srs':'EPSG:32618'}]))
-    heights=np.full((SOURCE_TILE,SOURCE_TILE),np.nan,np.float32);counts=np.zeros(heights.shape,np.uint32)
-    total=0
-    for points in pipeline.iterator(chunk_size=131072,prefetch=0):
-        sources.aggregate(points,heights,counts,transform);total+=len(points)
-    with rasterio.Env(GDAL_DISABLE_READDIR_ON_OPEN='EMPTY_DIR',GDAL_HTTP_TIMEOUT='90',GDAL_CACHEMAX=32*1024**2):
-        classes=sources.read_categories(sources.LULC,transform,SOURCE_TILE,256*1024**2)
-    tmp=path.with_suffix('.part')
-    with tmp.open('wb') as f:np.savez_compressed(f,heights=heights,counts=counts,classes=classes,retrieved_at=np.asarray(sources.now()))
-    tmp.replace(path)
-    print(f'Saved source tile {r},{c}: {int(counts.sum()):,} retained points, {int(np.isfinite(heights).sum()):,} measured cells',flush=True)
-    return path
+    last=None
+    for attempt in range(5):
+        print(f'Acquiring source tile {r},{c}'+(f' (retry {attempt})' if attempt else ''),flush=True)
+        try:
+            pipeline=pdal.Pipeline(json.dumps([
+                {'type':'readers.ept','filename':sources.EPT,'bounds':f'([{b[0]-.01},{b[2]+.01}],[{b[1]-.01},{b[3]+.01}])','requests':2},
+                {'type':'filters.reprojection','in_srs':'EPSG:3857','out_srs':'EPSG:32618'}]))
+            heights=np.full((SOURCE_TILE,SOURCE_TILE),np.nan,np.float32);counts=np.zeros(heights.shape,np.uint32)
+            total=0
+            for points in pipeline.iterator(chunk_size=131072,prefetch=0):
+                sources.aggregate(points,heights,counts,transform);total+=len(points)
+            with rasterio.Env(GDAL_DISABLE_READDIR_ON_OPEN='EMPTY_DIR',GDAL_HTTP_TIMEOUT='90',GDAL_CACHEMAX=32*1024**2):
+                classes=sources.read_categories(sources.LULC,transform,SOURCE_TILE,256*1024**2)
+            tmp=path.with_suffix('.part')
+            with tmp.open('wb') as f:np.savez_compressed(f,heights=heights,counts=counts,classes=classes,retrieved_at=np.asarray(sources.now()))
+            tmp.replace(path)
+            print(f'Saved source tile {r},{c}: {int(counts.sum()):,} retained points, {int(np.isfinite(heights).sum()):,} measured cells',flush=True)
+            return path
+        except Exception as error:
+            last=error
+            print(f'Source tile {r},{c} failed: {error}',flush=True)
+            time.sleep(3*(attempt+1))
+    raise last
 
 def reduce_grid(heights,classes,step):
     n=heights.shape[0]//step

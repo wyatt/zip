@@ -1,5 +1,5 @@
 import { areaGeometry, type SurveyArea } from "./areas";
-import { metersBetween, WAITING_FLEET_RADIUS_M, type GeoPoint, type JobKind } from "./operations";
+import { deliveryEndpoints, metersBetween, WAITING_FLEET_RADIUS_M, type GeoPoint, type JobKind } from "./operations";
 
 /** Local market radius used for demand vs idle-aircraft surge. */
 export const SURGE_RADIUS_M = WAITING_FLEET_RADIUS_M;
@@ -56,10 +56,12 @@ export function quoteOperatorEarnings(input: {
   idleNearby: number;
 }): EarningsQuote {
   const deadheadM = metersBetween(input.home, input.location);
-  const route = [input.location, ...input.destinations];
-  const last = input.destinations.at(-1);
-  const returnM = last ? metersBetween(last, input.home) : 0;
-  const taskM = pathMeters(route) + returnM;
+  const taskM = input.kind === "deliver"
+    ? (() => {
+      const { a, b } = deliveryEndpoints({ location: input.location, destinations: input.destinations, home: input.home });
+      return metersBetween(a, b) * 2;
+    })()
+    : pathMeters([input.location, ...input.destinations]) + (input.destinations.at(-1) ? metersBetween(input.destinations.at(-1)!, input.home) : 0);
   const surgeX = surgeMultiplier(input.openNearby, input.idleNearby);
   const altitudeExtraM = Math.max(0, input.altitudeM - 10);
   const subtotal =

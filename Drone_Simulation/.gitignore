@@ -1,5 +1,7 @@
 __pycache__/
 .cache/
+.conda/
+.tools/
 outputs/
 viewer/node_modules/
 viewer/dist/

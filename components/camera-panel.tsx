@@ -4,14 +4,14 @@ import { useQuery } from "convex/react";
 import type { Id } from "@/convex/_generated/dataModel";
 import { api } from "@/convex/_generated/api";
 
-export function CameraPanel({ operationId, supported }: { operationId: Id<"operations">; supported: boolean }) {
+export function CameraPanel({ operationId, supported, inspecting = false }: { operationId: Id<"operations">; supported: boolean; inspecting?: boolean }) {
   const stream = useQuery(api.cameras.forOperation, { operationId });
   const video = useRef<HTMLVideoElement>(null);
   const [error, setError] = useState(""), [playing, setPlaying] = useState(false), [expired, setExpired] = useState(false);
   useEffect(() => {
     const element = video.current;
     setError(""); setPlaying(false); setExpired(false);
-    if (!stream || !element) return;
+    if (!stream || stream.protocol === "mjpeg" || !element) return;
     const controller = new AbortController();
     let peer: RTCPeerConnection | undefined, resourceUrl: string | undefined, disposeHls: (() => void) | undefined;
     const expiry = setTimeout(() => { setExpired(true); controller.abort(); peer?.close(); disposeHls?.(); element.pause(); element.removeAttribute("src"); element.srcObject = null; }, Math.max(0, stream.expiresAt - Date.now()));
@@ -48,5 +48,26 @@ export function CameraPanel({ operationId, supported }: { operationId: Id<"opera
     })().catch(error => { if (!controller.signal.aborted) setError(error instanceof Error ? error.message : "Camera unavailable."); });
     return () => { clearTimeout(expiry); controller.abort(); peer?.close(); disposeHls?.(); element.pause(); element.srcObject = null; element.removeAttribute("src"); if (resourceUrl) void fetch(resourceUrl, { method: "DELETE", credentials: "omit", keepalive: true }).catch(() => undefined); };
   }, [stream?.url, stream?.protocol, stream?.expiresAt]);
-  return <section className="camera-panel"><h3>Aircraft camera</h3>{!supported ? <p className="muted">This aircraft adapter does not provide a camera.</p> : !stream ? <p className="muted">Waiting for an authorized camera stream from the aircraft.</p> : <><p className="muted">{expired ? "Camera authorization expired." : playing ? "Live aircraft video" : "Connecting camera…"}</p><video className="live-video" ref={video} autoPlay muted playsInline controls onPlaying={() => setPlaying(true)} onWaiting={() => setPlaying(false)} onError={() => setError("Camera playback failed.")} aria-label="Aircraft camera feed" /></>}{error && <p className="error" role="status">{error}</p>}</section>;
+  const live = !expired && !!stream;
+  return (
+    <details className="camera-panel">
+      <summary>
+        <h3>{inspecting ? "Inspection mosaic" : "Live aircraft video"}</h3>
+      </summary>
+      {!supported ? <p className="muted">This aircraft adapter does not provide a camera.</p>
+        : !stream ? <p className="muted">{inspecting ? "Waiting for the inspection trace to start." : "Waiting for an authorized camera stream from the aircraft."}</p>
+          : stream.protocol === "mjpeg" ? (
+            <>
+              <p className="muted">{expired ? "Camera authorization expired." : inspecting ? "North-up capture trace" : "Live aircraft video"}</p>
+              {!expired && <img className={`live-video${inspecting ? " inspection-mosaic" : ""}`} src={stream.url} alt={inspecting ? "Inspection mosaic" : "Live aircraft video"} onLoad={() => setPlaying(true)} onError={() => setError("Camera playback failed.")} />}
+            </>
+          ) : (
+            <>
+              <p className="muted">{expired ? "Camera authorization expired." : playing ? "Live aircraft video" : "Connecting camera…"}</p>
+              <video className="live-video" ref={video} autoPlay muted playsInline controls onPlaying={() => setPlaying(true)} onWaiting={() => setPlaying(false)} onError={() => setError("Camera playback failed.")} aria-label="Live aircraft video" />
+            </>
+          )}
+      {error && live && <p className="error" role="status">{error}</p>}
+    </details>
+  );
 }

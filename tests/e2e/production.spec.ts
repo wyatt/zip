@@ -46,7 +46,6 @@ test("private customer request → self-registered operator → provisioned loca
     await saveOperatorLocations(operator);
     await operator.getByRole("link", { name: "Fleet", exact: true }).click();
     await operator.getByRole("button", { name: "Add aircraft", exact: true }).click();
-    await operator.getByLabel("Environment", { exact: true }).selectOption("simulated");
     await operator.getByRole("button", { name: "Register aircraft", exact: true }).click();
     await expect(operator.locator("pre.secret-value")).toBeVisible();
     const agentToken = (await operator.locator("pre.secret-value").innerText()).replace("IRIS_AGENT_TOKEN=", "").trim();
@@ -69,7 +68,7 @@ test("private customer request → self-registered operator → provisioned loca
     await expect(start).toBeEnabled({ timeout: 20000 });
     await operator.screenshot({ path: testInfo.outputPath("operator-ready.png"), fullPage: true });
     await start.click();
-    await expect(operator.getByTestId("control-owner")).toHaveText("Flight agent", { timeout: 10000 });
+    await expect(operator.getByRole("heading", { name: "In flight", exact: true })).toBeVisible({ timeout: 10000 });
     await expect.poll(async () => Number((await operator.getByTestId("altitude").innerText()).replace("m", ""))).toBeGreaterThan(1);
     await operator.screenshot({ path: testInfo.outputPath("operator-flight.png"), fullPage: true });
     await expect(operator.getByRole("heading", { name: "Completed", exact: true })).toBeVisible({ timeout: 30000 });
@@ -102,7 +101,7 @@ test("private customer request → self-registered operator → provisioned loca
     await expect(operator.getByRole("dialog", { name: "Take Control" })).toBeVisible();
     await expect(operator.getByRole("dialog")).toContainText("hover in place");
     await operator.getByRole("dialog").getByRole("button", { name: "Take Control", exact: true }).click();
-    await expect(operator.getByTestId("control-owner")).toHaveText("Operator computer");
+    await expect(operator.getByRole("heading", { name: "Operator in control", exact: true })).toBeVisible();
     await operator.getByRole("button", { name: "Connect computer controls", exact: true }).click();
     await expect(operator.getByText("Computer controls connected", { exact: true })).toBeVisible();
     const north = operator.getByRole("button", { name: "North", exact: true });
@@ -112,7 +111,7 @@ test("private customer request → self-registered operator → provisioned loca
     await operator.getByRole("button", { name: "Manual land", exact: true }).click();
     await expect(operator.getByRole("heading", { name: "Completed", exact: true })).toBeVisible({ timeout: 15000 });
     await requestAnother(`Manual check ${suffix}`, true);
-    await expect(operator.getByTestId("control-owner")).toHaveText("Operator computer");
+    await expect(operator.getByRole("heading", { name: "Operator in control", exact: true })).toBeVisible();
     await expect(operator.getByTestId("altitude")).toHaveText("0.0m");
     await operator.getByRole("button", { name: "Connect computer controls", exact: true }).click();
     await expect(operator.getByText("Computer controls connected", { exact: true })).toBeVisible();

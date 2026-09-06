@@ -1,13 +1,16 @@
 import { v } from "convex/values";
 import { internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
 import { assignLaunchSiteIds } from "../lib/launch-sites";
 import { BASE_CAPABILITIES, capabilitiesFromTags, droneTypeById, type OptionalTag } from "../lib/aircraft";
 import type { Capability, Environment, GeoPoint, JobKind } from "../lib/operations";
+import { GOLDWIN_SMITH_HALL, ITHACA_HOME } from "../lib/ithaca";
+import { syncFleetLaunchSites } from "./fleet";
 
 const QUALIFICATIONS: JobKind[] = ["flight_check", "search", "inspection", "deliver"];
 const DC = { lat: 38.9072, lon: -77.0369 };
-const ITHACA = { lat: 42.443, lon: -76.5019 };
+const ITHACA = ITHACA_HOME;
 
 function offset(base: GeoPoint, northM: number, eastM: number): GeoPoint {
   return {
@@ -172,5 +175,120 @@ export const demoCoverage = internalMutation({
       vehiclesCreated += result.vehicles;
     }
     return { operatorsCreated, vehiclesCreated };
+  },
+});
+
+const WYATT_EMAIL = "wss58@cornell.edu";
+const GOLDWIN_SMITH_NAME = "Goldwin Smith Hall";
+const GOLDWIN_AIRCRAFT: SeedAircraft[] = [
+  { hardwareId: "wyatt-gsh-mini", name: "Smith Scout", typeId: "dji-mini-4k", environment: "aircraft", northM: 25, eastM: -18 },
+  { hardwareId: "wyatt-gsh-mavic", name: "Arts Quad", typeId: "dji-mavic-3-pro", environment: "aircraft", northM: -20, eastM: 30 },
+  { hardwareId: "wyatt-gsh-industrial", name: "McGraw Inspector", typeId: "industrial", environment: "aircraft", northM: 40, eastM: 12 },
+  { hardwareId: "wyatt-gsh-cargo", name: "Ezra Cargo", typeId: "delivery", environment: "aircraft", northM: -8, eastM: -28, extra: ["payload"] },
+];
+
+async function findUserByEmail(ctx: MutationCtx, email: string) {
+  const users = await ctx.db.query("users").take(200);
+  return users.find(user => user.email?.toLowerCase() === email) ?? null;
+}
+
+async function insertAircraft(ctx: MutationCtx, operatorId: Id<"users">, aircraft: SeedAircraft, home: GeoPoint, launch: { id: string; name: string }) {
+  const type = droneTypeById(aircraft.typeId);
+  const tags = [...type.tags, ...(aircraft.extra ?? [])];
+  const capabilities: Capability[] = capabilitiesFromTags(tags);
+  const already = await ctx.db.query("vehicles").withIndex("by_hardwareId", q => q.eq("hardwareId", aircraft.hardwareId)).unique();
+  if (already) return false;
+  await ctx.db.insert("vehicles", {
+    operatorId,
+    name: aircraft.name,
+    model: type.label,
+    hardwareId: aircraft.hardwareId,
+    environment: aircraft.environment,
+    capabilities: aircraft.environment === "simulated" ? [...new Set([...BASE_CAPABILITIES, ...capabilities])] : capabilities,
+    maxPayloadKg: tags.includes("payload") ? type.payloadKg ?? 2 : 0,
+    ...(tags.includes("camera") ? { cameraMp: type.cameraMp ?? 12 } : {}),
+    home,
+    launchSiteId: launch.id,
+    launchSiteName: launch.name,
+    maxRadiusM: 8000,
+    available: true,
+    integrationApproved: true,
+  });
+  return true;
+}
+
+export const addGoldwinSmithBase = internalMutation({
+  args: { email: v.optional(v.string()) },
+  returns: v.object({
+    email: v.string(),
+    siteAdded: v.boolean(),
+    siteId: v.string(),
+    vehiclesCreated: v.number(),
+    vehicleNames: v.array(v.string()),
+  }),
+  handler: async (ctx, args) => {
+    const email = (args.email ?? WYATT_EMAIL).trim().toLowerCase();
+    const user = await findUserByEmail(ctx, email);
+    if (!user) throw new Error(`No account found for ${email}.`);
+    const member = await ctx.db.query("members").withIndex("by_user", q => q.eq("userId", user._id)).unique();
+    if (!member) throw new Error("Finish setting up the account before adding a base.");
+    if (member.role === "customer") await ctx.db.patch(member._id, { role: "operator" });
+    const profile = await ctx.db.query("operatorProfiles").withIndex("by_user", q => q.eq("userId", user._id)).unique();
+    const existing = profile?.presetLocations ?? [];
+    const alreadyHasSite = existing.some(location => location.name.toLowerCase() === GOLDWIN_SMITH_NAME.toLowerCase());
+    const locations = assignLaunchSiteIds(alreadyHasSite ? existing : [...existing, { name: GOLDWIN_SMITH_NAME, ...GOLDWIN_SMITH_HALL }]);
+    const launch = locations.find(site => site.name.toLowerCase() === GOLDWIN_SMITH_NAME.toLowerCase());
+    if (!launch) throw new Error("Goldwin Smith Hall launch site is missing.");
+    if (profile) {
+      await ctx.db.patch(profile._id, { presetLocations: locations, approved: true, acceptingJobs: true, qualifications: [...new Set([...profile.qualifications, ...QUALIFICATIONS])] });
+    } else {
+      await ctx.db.insert("operatorProfiles", {
+        userId: user._id,
+        approved: true,
+        acceptingJobs: true,
+        qualifications: QUALIFICATIONS,
+        base: existing[0] ? { lat: existing[0].lat, lon: existing[0].lon } : ITHACA_HOME,
+        serviceRadiusM: 18000,
+        presetLocations: locations,
+      });
+    }
+    const names: string[] = [];
+    let vehiclesCreated = 0;
+    for (const aircraft of GOLDWIN_AIRCRAFT) {
+      const home = offset(GOLDWIN_SMITH_HALL, aircraft.northM, aircraft.eastM);
+      const created = await insertAircraft(ctx, user._id, aircraft, home, launch);
+      if (created) {
+        vehiclesCreated += 1;
+        names.push(aircraft.name);
+      }
+    }
+    return { email, siteAdded: !alreadyHasSite, siteId: launch.id, vehiclesCreated, vehicleNames: names };
+  },
+});
+
+export const relocateHomesToIthaca = internalMutation({
+  args: {},
+  returns: v.object({ profiles: v.number(), vehicles: v.number() }),
+  handler: async ctx => {
+    const home = ITHACA_HOME;
+    const profiles = await ctx.db.query("operatorProfiles").take(100);
+    let vehicles = 0;
+    for (const profile of profiles) {
+      const locations = assignLaunchSiteIds((profile.presetLocations ?? []).map(location => (
+        location.name.toLowerCase() === "home" ? { ...location, lat: home.lat, lon: home.lon } : location
+      )));
+      if (!locations.some(location => location.name.toLowerCase() === "home")) {
+        locations.unshift({ id: "home", name: "Home", ...home });
+      }
+      await ctx.db.patch(profile._id, { base: home, presetLocations: locations });
+      await syncFleetLaunchSites(ctx, profile.userId, locations);
+      const fleet = await ctx.db.query("vehicles").withIndex("by_operator", q => q.eq("operatorId", profile.userId)).take(100);
+      const launch = locations.find(location => location.name.toLowerCase() === "home") ?? locations[0]!;
+      for (const vehicle of fleet) {
+        await ctx.db.patch(vehicle._id, { home, launchSiteId: launch.id, launchSiteName: launch.name });
+        vehicles += 1;
+      }
+    }
+    return { profiles: profiles.length, vehicles };
   },
 });

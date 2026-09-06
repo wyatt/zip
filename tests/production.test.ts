@@ -3,7 +3,8 @@ import { afterEach, expect, test, vi } from "vitest";
 import schema from "../convex/schema";
 import { api, internal } from "../convex/_generated/api";
 import { hashSecret } from "../convex/access";
-import { createFlightPlan, matchesRequirements, missionProgressPct, preflightProblems, requiredCapabilities, validateSample, type AircraftSample, type Capability } from "../lib/operations";
+import { createFlightPlan, deliveryEndpoints, matchesRequirements, missionProgressPct, preflightProblems, previewAcceptedFlight, requiredCapabilities, validateSample, type AircraftSample, type Capability } from "../lib/operations";
+import { regionalMissionConfig, syntheticRegionalPlan } from "../lib/regional-plan";
 
 const modules = import.meta.glob("../convex/**/*.ts");
 const home = { lat: 42.35596, lon: -71.07029 };
@@ -160,13 +161,13 @@ test("invalid registration creates no operator, and suspended operators cannot r
   });
   await expect(f.operator.mutation(api.fleet.register, args)).rejects.toThrow("suspended");
 });
-test("matching requires qualifications, capability, environment and service coverage", () => {
+test("matching requires qualifications, capability, and service coverage", () => {
   const order = { kind: "inspection" as const, environment: "aircraft" as const, location: home, required: requiredCapabilities("inspection"), payloadKg: 0 };
   const operator = { approved: true, acceptingJobs: true, qualifications: ["inspection" as const], base: home, serviceRadiusM: 100 };
   const vehicle = { environment: "aircraft" as const, capabilities: [...capabilities, "camera" as const], maxPayloadKg: 0, available: true, integrationApproved: true };
   expect(matchesRequirements(order, operator, vehicle)).toBe(true);
-  expect(matchesRequirements(order, operator, { ...vehicle, capabilities })).toBe(false);
-  expect(matchesRequirements(order, operator, { ...vehicle, integrationApproved: false })).toBe(false);
+  expect(matchesRequirements(order, operator, { ...vehicle, available: false })).toBe(false);
+  expect(matchesRequirements(order, operator, { ...vehicle, integrationApproved: false })).toBe(true);
   expect(matchesRequirements(order, { ...operator, base: { lat: 0, lon: 0 } }, vehicle)).toBe(false);
 });
 test("an operator can fly multiple jobs at once when each has its own aircraft", async () => {
@@ -179,6 +180,20 @@ test("an operator can fly multiple jobs at once when each has its own aircraft",
   expect(second).not.toBe(first);
   const operations = await f.operator.query(api.operations.mine, {});
   expect(operations.filter(operation => operation.state === "assigned")).toHaveLength(2);
+});
+test("operators can delete open and assigned jobs without confirmation", async () => {
+  const f = await fixture();
+  await expect(f.customer.mutation(api.workOrders.remove, { workOrderId: f.workOrderId })).rejects.toThrow("operator account");
+  await f.operator.mutation(api.workOrders.remove, { workOrderId: f.workOrderId });
+  expect(await f.operator.query(api.workOrders.eligible, {})).toHaveLength(0);
+  expect(await f.customer.query(api.workOrders.mine, {})).toHaveLength(0);
+  const second = await f.customer.mutation(api.workOrders.submit, { title: "Second hover", description: "Check delete after accept", kind: "flight_check", environment: "simulated", location: home, destinations: [], payloadKg: 0, altitudeM: 3, hoverSec: 5 });
+  await f.operator.mutation(api.workOrders.accept, { workOrderId: second, vehicleId: f.vehicleId, mode: "autonomous", manualControl: "remote" });
+  await f.operator.mutation(api.workOrders.remove, { workOrderId: second });
+  expect(await f.operator.query(api.operations.mine, {})).toHaveLength(0);
+  const vehicle = (await f.operator.query(api.fleet.mine, {})).find(item => item._id === f.vehicleId);
+  expect(vehicle?.available).toBe(true);
+  expect(vehicle?.activeOperationId).toBeUndefined();
 });
 test("acceptance reserves one operation and repeated acceptance does not duplicate it", async () => {
   const f = await fixture();
@@ -204,6 +219,25 @@ test("session ownership rejects impostors and competing agents", async () => {
   await expect(f.t.mutation(api.agentLink.open, { token, vehicleId: f.vehicleId, instanceId: "other-instance-123", hardwareId: "test-aircraft", environment: "simulated", capabilities })).rejects.toThrow("Another flight agent");
   vi.setSystemTime(Date.now() + 11000);
   await expect(f.t.mutation(api.agentLink.publish, { token, sessionId: f.sessionId, sample: sample(1) })).rejects.toThrow("session lost");
+});
+test("same fleet token can reclaim a silent session", async () => {
+  const f = await readyFixture();
+  vi.setSystemTime(Date.now() + 3100);
+  const next = await f.t.mutation(api.agentLink.open, { token, vehicleId: f.vehicleId, instanceId: "reclaim-instance-123", hardwareId: "test-aircraft", environment: "simulated", capabilities });
+  expect(next).not.toBe(f.sessionId);
+});
+test("telemetry with a newer sequence but equal timestamp is ignored", async () => {
+  const f = await readyFixture();
+  vi.setSystemTime(Date.now() + 5);
+  const now = Date.now();
+  await f.t.mutation(api.agentLink.publish, { token, sessionId: f.sessionId, sample: { ...sample(2), capturedAt: now } });
+  await f.t.mutation(api.agentLink.publish, { token, sessionId: f.sessionId, sample: { ...sample(3), capturedAt: now } });
+  const telemetry = await f.t.run(ctx => ctx.db.query("vehicleTelemetry").withIndex("by_vehicle", q => q.eq("vehicleId", f.vehicleId)).unique());
+  expect(telemetry?.sample.sequence).toBe(2);
+  vi.setSystemTime(now + 1);
+  await f.t.mutation(api.agentLink.publish, { token, sessionId: f.sessionId, sample: { ...sample(3), capturedAt: now + 1 } });
+  const next = await f.t.run(ctx => ctx.db.query("vehicleTelemetry").withIndex("by_vehicle", q => q.eq("vehicleId", f.vehicleId)).unique());
+  expect(next?.sample.sequence).toBe(3);
 });
 test("start rechecks fresh preflight, expires, and cannot be claimed twice", async () => {
   const f = await readyFixture();
@@ -254,6 +288,92 @@ test("telemetry rejects NaN, infinity, impossible state and old source timestamp
   expect(() => validateSample({ ...sample(), capturedAt: Date.now() - 11000 }, Date.now())).toThrow("timestamp");
   const plan = createFlightPlan({ kind: "flight_check", location: home, destinations: [], home, mode: "autonomous", altitudeM: 3, hoverSec: 5, maxRadiusM: 100 });
   expect(preflightProblems({ ...sample(), batteryPct: null }, plan, Date.now())).toContain("Insufficient battery or battery unknown");
+});
+
+test("acceptance preview uses the regional A* draft and a hover fallback", () => {
+  const pickup = { lat: 42.4478926458004, lon: -76.48646602014907 };
+  const drop = { lat: 42.449, lon: -76.484 };
+  const delivery = regionalMissionConfig({
+    kind: "deliver",
+    location: pickup,
+    destinations: [drop],
+    home: pickup,
+  });
+  expect(delivery).toMatchObject({ mode: "delivery" });
+  expect(delivery?.a).toEqual([0, 0]);
+  expect(delivery?.b?.[0]).toBeGreaterThan(0);
+  const padToDrop = regionalMissionConfig({
+    kind: "deliver",
+    location: drop,
+    destinations: [drop],
+    home: pickup,
+  });
+  expect(padToDrop?.a).toEqual([0, 0]);
+  const ends = deliveryEndpoints({ location: pickup, destinations: [drop], home: pickup });
+  expect(ends.a).toEqual(pickup);
+  expect(ends.b).toEqual(drop);
+  const plan = createFlightPlan({
+    kind: "deliver",
+    location: pickup,
+    destinations: [drop],
+    home: pickup,
+    mode: "autonomous",
+    altitudeM: 3,
+    hoverSec: 10,
+    maxRadiusM: 3000,
+  });
+  expect(plan.steps[1]).toMatchObject({ kind: "deliver", position: drop });
+  expect(plan.steps[2]).toMatchObject({ kind: "land", position: pickup });
+  const survey = regionalMissionConfig({
+    kind: "inspection",
+    location: drop,
+    destinations: [drop],
+    home: { lat: 42.4478926458004, lon: -76.48646602014907 },
+    area: {
+      northWest: { lat: 42.449, lon: -76.488 },
+      southEast: { lat: 42.447, lon: -76.484 },
+    },
+  });
+  expect(survey).toMatchObject({ mode: "inspection" });
+  expect(survey?.polygon?.[0]).toHaveLength(4);
+  expect(regionalMissionConfig({
+    kind: "flight_check",
+    location: home,
+    destinations: [],
+    home,
+  })).toBeNull();
+  const hover = previewAcceptedFlight({
+    kind: "flight_check",
+    location: home,
+    destinations: [],
+    home,
+    altitudeM: 3,
+    hoverSec: 5,
+  });
+  expect(hover.path).toEqual([home]);
+  expect(hover.durationSec).toBe(71);
+  const elsewhere = { lat: 38.9072, lon: -77.0369 };
+  const remapped = regionalMissionConfig({
+    kind: "deliver",
+    location: { lat: 38.908, lon: -77.035 },
+    destinations: [{ lat: 38.908, lon: -77.035 }],
+    home: elsewhere,
+  });
+  expect(remapped?.a?.[0]).toBeCloseTo(0, 5);
+  expect(remapped?.a?.[1]).toBeCloseTo(0, 5);
+  const synthetic = syntheticRegionalPlan({
+    kind: "inspection",
+    home: elsewhere,
+    location: { lat: 38.908, lon: -77.035 },
+    destinations: [{ lat: 38.908, lon: -77.035 }],
+    area: {
+      northWest: { lat: 38.9085, lon: -77.037 },
+      southEast: { lat: 38.9065, lon: -77.034 },
+    },
+  });
+  expect(synthetic.mode).toBe("inspection");
+  expect(synthetic.photoCount).toBeGreaterThan(0);
+  expect(synthetic.tasks.some(task => task.kind === "return")).toBe(true);
 });
 
 test("mission progress follows verified steps and live telemetry", () => {
@@ -325,14 +445,27 @@ test("computer tickets require acknowledged ownership and cannot be replayed", a
 test("camera sessions are scoped to the job and authenticated aircraft", async () => {
   const f = await readyFixture();
   const camera = { token, sessionId: f.sessionId, operationId: f.operationId, protocol: "whep" as const, url: "https://camera.example.test/session/signed", expiresAt: Date.now() + 60000 };
-  await expect(f.t.mutation(api.cameras.publish, camera)).rejects.toThrow("not available");
-  await f.t.run(ctx => ctx.db.patch(f.vehicleId, { capabilities: [...capabilities, "camera"] }));
   await f.t.mutation(api.cameras.publish, camera);
   expect((await f.customer.query(api.cameras.forOperation, { operationId: f.operationId }))?.url).toBe(camera.url);
   await expect(f.stranger.query(api.cameras.forOperation, { operationId: f.operationId })).rejects.toThrow("not found");
   await expect(f.t.mutation(api.cameras.publish, { ...camera, url: "http://insecure.example.test/stream" })).rejects.toThrow("HTTPS");
   vi.setSystemTime(Date.now() + 61000);
   expect(await f.customer.query(api.cameras.forOperation, { operationId: f.operationId })).toBeNull();
+});
+
+test("Goldwin Smith Hall base and aircraft attach to an existing operator", async () => {
+  const f = await fixture();
+  const first = await f.t.mutation(internal.seed.addGoldwinSmithBase, { email: "operator@example.com" });
+  expect(first.siteAdded).toBe(true);
+  expect(first.vehiclesCreated).toBe(4);
+  expect(first.vehicleNames).toEqual(["Smith Scout", "Arts Quad", "McGraw Inspector", "Ezra Cargo"]);
+  const again = await f.t.mutation(internal.seed.addGoldwinSmithBase, { email: "operator@example.com" });
+  expect(again).toMatchObject({ siteAdded: false, vehiclesCreated: 0, vehicleNames: [] });
+  const profile = await f.t.run(async ctx => ctx.db.query("operatorProfiles").withIndex("by_user", q => q.eq("userId", f.operatorId)).unique());
+  expect(profile?.presetLocations?.some(site => site.name === "Goldwin Smith Hall")).toBe(true);
+  const fleet = await f.operator.query(api.fleet.mine, {});
+  const goldwin = fleet.filter(vehicle => vehicle.launchSiteName === "Goldwin Smith Hall");
+  expect(goldwin.map(vehicle => vehicle.name).sort()).toEqual(["Arts Quad", "Ezra Cargo", "McGraw Inspector", "Smith Scout"]);
 });
 
 test("seeded DC and Ithaca aircraft appear while a matching job is waiting", async () => {
@@ -342,13 +475,14 @@ test("seeded DC and Ithaca aircraft appear while a matching job is waiting", asy
   expect(seeded.vehiclesCreated).toBeGreaterThan(10);
   expect(await f.t.mutation(internal.seed.demoCoverage, {})).toEqual({ operatorsCreated: 0, vehiclesCreated: 0 });
   const ithaca = { lat: 42.443, lon: -76.5019 };
+  const ithacaDrop = { lat: 42.4442, lon: -76.5004 };
   const orderId = await f.customer.mutation(api.workOrders.submit, {
     title: "Ithaca drop",
     description: "Pharmacy",
     kind: "deliver",
     environment: "aircraft",
     location: ithaca,
-    destinations: [ithaca],
+    destinations: [ithacaDrop],
     payloadKg: 0.4,
     altitudeM: 8,
     hoverSec: 10,
