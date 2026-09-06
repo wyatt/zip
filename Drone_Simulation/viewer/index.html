@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><meta name="theme-color" content="#111c24"/><title>Ithaca · Landscape study</title></head>
+<body>
+  <main id="viewer" class="map-mode" aria-label="Interactive 3D landscape of Ithaca">
+    <div id="scene" tabindex="0" aria-label="Top-down map. Drag to pan, scroll to zoom. Click 3D view to explore the model. Use arrow keys to pan."></div>
+    <nav class="panel tools" aria-label="View controls"><button id="top" class="active" aria-pressed="true">Map</button><button id="orbit" aria-pressed="false">3D view ↗</button><span class="divider"></span><button id="reset" title="Reset camera">Reset ↗</button></nav>
+    <div class="panel legend" aria-label="Aerial imagery source"><span class="legend-title">ENHANCED AERIAL COLOR</span><span>Spring 2023 aerial imagery</span><span>© <a href="https://gis.ny.gov/tompkins-county-orthoimagery-downloads" target="_blank" rel="noopener">NYS ITS Geospatial Services</a></span><span>Missing heights: visual averages · Hover for details</span></div>
+    <footer><span id="extent">1 m cells · measured heights</span><span id="camera-hint">Drag to pan · Scroll to zoom · Click 3D view to explore</span><span>LiDAR 2020 · Cover 2022</span></footer>
+    <div class="map-credit">Land cover: <a href="https://www.usgs.gov/data/chesapeake-bay-land-useland-cover-lulc-database-2024-edition" target="_blank" rel="noopener">USGS / Chesapeake Bay Program</a> · Imagery: NYS ITS</div>
+    <button id="start-marker" class="map-label a" title="Move start point">Start</button>
+    <button id="end-marker" class="map-label b" title="Move end point">End</button>
+    <div class="inspection-caption">Inspection area · 136 × 385 m</div>
+    <section class="panel mission-panel" aria-label="Inspection simulation">
+      <div class="mission-heading"><strong>Inspection simulation</strong><span id="mission-rate">1× REAL TIME</span></div>
+      <div id="mission-phase">Ready</div>
+      <div class="mission-stats"><div><small>MISSION TIME</small><output id="mission-clock">00:00:00</output></div><div><small>BATTERY</small><output id="mission-battery">100.0%</output></div></div>
+      <progress id="mission-battery-bar" max="100" value="100" aria-label="Battery remaining"></progress>
+      <div class="mission-parts"><span id="mission-part-1" class="current">Part 1 · East</span><span id="mission-part-2">Part 2 · West</span></div>
+      <div id="mission-progress">42 passes · 7,896 photos planned</div>
+      <div id="mission-arrival">Return target: ≥ 10% at charger</div>
+      <div id="mission-sorties">Flight — · 0 returns</div>
+      <div id="mission-detail" role="status">Home / charger = Start</div>
+      <div class="mission-actions"><button id="mission-run">Start simulation</button><button id="mission-restart">Restart</button></div>
+      <details><summary>Drone assumptions</summary>
+        <label>Flight speed <input id="mission-speed" type="number" min="1" max="15" step="0.5" value="5"> m/s</label>
+        <label>Full-battery endurance <input id="mission-endurance" type="number" min="5" max="180" step="0.5" value="46.5"> min</label>
+        <label>Empty-to-full charging <input id="mission-charge" type="number" min="0.5" max="120" step="0.5" value="20"> min</label>
+        <p>2 m/s climb · 15 ft clearance + 0.5 m body + 1 m uncertainty. Constant flight-time battery model; not fleet-calibrated.</p>
+        <p>Targets 12 m above the local roof or terrain, raised only for nearby obstacle clearance. Slows down for climbs and descents. Missing heights use nearby measured maxima as a simulation estimate. Takeoff/landing use the designated pad column.</p>
+      </details>
+      <p class="mission-disclaimer">Offline simulation · FAA footprints present. Not a flight-ready route. Survey plays at 70×; charging at 140×; travel at 10×.</p>
+    </section>
+    <section class="panel reconstruction-panel" aria-label="Simulated rooftop reconstruction">
+      <details open><summary>Rooftop mosaic <span>2D · N ↑</span></summary>
+        <p id="reconstruction-status" role="status">Waiting for the first photo</p>
+        <div class="reconstruction-image"><canvas id="reconstruction-canvas" width="136" height="385" aria-label="North-up aerial mosaic revealed by captured photos"></canvas></div>
+        <p>Model colors · 2023 aerial detail. Blank = not yet photographed.</p>
+        <button id="reconstruction-download" disabled>Download grid JSON</button>
+      </details>
+    </section>
+    <div id="point-hint" class="point-hint" role="status" hidden></div>
+    <div id="hover" class="panel" hidden></div>
+    <div id="loading" class="panel loading" role="status">Bringing the landscape into view…</div>
+  </main>
+  <script type="module" src="/main.js"></script>
+</body>
+</html>
